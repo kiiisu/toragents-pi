@@ -33,17 +33,19 @@ gets a real push. One harness, one failure surface, one thing to verify.
 Plain Linux / macOS:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/rx3asarc/toragents-pi/main/setup.sh | bash
+curl -fsSL https://raw.githubusercontent.com/rx3asarc/toragents-pi/806fe572547c7cf7e9e6b43789c96ec22f6bccc6/setup.sh | bash
 ```
 
 Windows (PowerShell):
 
 ```powershell
-irm https://raw.githubusercontent.com/rx3asarc/toragents-pi/main/setup.ps1 | iex
+irm https://raw.githubusercontent.com/rx3asarc/toragents-pi/806fe572547c7cf7e9e6b43789c96ec22f6bccc6/setup.ps1 | iex
 ```
 
-It takes a few minutes, most of it waiting for tor to publish your onion. When
-it finishes it prints two lines:
+Those URLs are pinned to commit `806fe572547c` rather than `main`, so the script
+you run is the script that was reviewed. Swap the SHA for `main` to take
+whatever is newest. It takes a few minutes, most of it waiting for tor to
+publish your onion. When it finishes it prints two lines:
 
 ```
 onion        xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.onion
