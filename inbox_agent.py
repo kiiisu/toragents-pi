@@ -554,6 +554,10 @@ def send_to(target_onion, body, k=None, session=None, to_session=None):
 
 # ------------------------------------------------------------------- cli --
 
+MY_SESSION = ""
+RECEIVE_TARGETED = False
+
+
 def cmd_doctor(a):
     """Answer "is the receiving half wired up on THIS machine?" -- measured.
 
@@ -565,6 +569,10 @@ def cmd_doctor(a):
     home = os.path.expanduser("~")
     state = STATE
     inbox = os.path.join(state, "inbox")
+    # Same inputs the extension reads, so the labels below match what it will do.
+    global MY_SESSION, RECEIVE_TARGETED
+    MY_SESSION = (os.environ.get("TORAGENTS_SESSION") or "").strip() or auto_session()
+    RECEIVE_TARGETED = (os.environ.get("TORAGENTS_RECEIVE") or "all").strip().lower() == "targeted"
 
     def count(d):
         try:
@@ -653,8 +661,22 @@ def cmd_doctor(a):
             print(f"  {n}  unreadable")
             continue
         mid = str(m.get("id") or "?")
-        state_word = "delivered" if mid in announced else "PENDING"
-        print(f"  {mid:14} {state_word:9} to={m.get('to_session') or '-':18} "
+        to_sess = (m.get("to_session") or "").strip()
+        if mid in announced:
+            state_word = "delivered"
+        elif RECEIVE_TARGETED and not to_sess:
+            # In the documented quiet-box mode an untargeted message is filtered
+            # out before it is ever claimed. No tick, retry or restart will
+            # deliver it, so calling it PENDING (waiting for something that will
+            # happen) is a lie.
+            state_word = "UNROUTABLE"
+        elif to_sess and to_sess != MY_SESSION:
+            # Correctly addressed to another session. Unlabelled, a human running
+            # doctor in the wrong window reads it as stuck mail.
+            state_word = f"for {to_sess[:9]}"
+        else:
+            state_word = "PENDING"
+        print(f"  {mid:14} {state_word:12} to={to_sess or '-':18} "
               f"from={m.get('from_label') or m.get('from') or '?'}")
     return 0
 

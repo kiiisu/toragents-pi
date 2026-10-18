@@ -142,6 +142,14 @@ waiting
 58f57dfed496  PENDING   to=-                  from=alex-laptop
 ```
 
+Three labels, three different meanings, and only one of them will fix itself:
+
+| label | meaning |
+| --- | --- |
+| `PENDING` | waiting for the next poll (3s). It will arrive. |
+| `for pi-9e83f4aa` | addressed to another session on this machine. Not yours to see. |
+| `UNROUTABLE` | untargeted mail while `TORAGENTS_RECEIVE=targeted`. No tick, retry or restart will deliver it — that is what targeted mode means. |
+
 `PENDING` with the extension installed means the session has not polled yet —
 restart pi. `MISSING` on the extension line is the one failure that cannot fix
 itself: re-run the installer.
@@ -221,6 +229,7 @@ bun tools/test_failure.ts    # a failed delivery must not look delivered
 bun tools/test_orphan.ts     # a crash mid-delivery must not strand a message
 bun tools/test_batch.ts      # a flood marks only what it rendered
 bun tools/test_stuck.ts      # an unwritable state dir must not loop forever
+python3 tools/test_doctor.py # PENDING vs for-session vs UNROUTABLE
 ```
 
 The race test is the one worth understanding: with the claim disabled it
@@ -228,11 +237,26 @@ delivers twice, which is how it was proven able to fail.
 
 **Failure is a first-class state.** If a message cannot be handed to the model
 after three attempts, it is *unclaimed*, removed from `announced.json`, and
-recorded in `state/failed/<id>` with the error. `/toragents-status` lists it,
+recorded in `state/failed/<id>` with the error. That marker is not permanent: a
+restart forgets the in-memory suppression and the five-minute orphan heal can
+release it again, so the honest description is "retried, with a warning each
+round" rather than "parked". For two people that is the right trade — a warning
+you can act on beats a message silently parked forever. `/toragents-status` lists it,
 `inbox doctor` lists it, and `/toragents-retry` puts it back in the queue. The
 alternative — keeping it marked delivered — gives the sender a receipt for a
 message no model ever saw, which is the one failure this channel must never
 report as success.
+
+**What "delivered" promises — exactly.** `sendUserMessage` resolves when the
+message is *enqueued*, not when a model reads it. So delivery here means: the
+message is in the session's turn queue and will become a user turn at the next
+turn boundary. This channel has no end-to-end acknowledgement, so if the session
+is killed between enqueue and that turn — `kill -9`, a crashed terminal, a
+shutdown hook dropping the queue — the message is lost on both sides while both
+machines show success. The peer's copy is still in its outbox directory, so a
+human can resend, but nothing does it automatically. For two people I would
+rather state that than build a receipt protocol that claims more than it can
+prove. `TORAGENTS_ACK` does not exist; this paragraph is the guarantee.
 
 **A flood is throttled by not marking the rest.** Each turn claims and announces
 only the messages it actually renders (five), so the remainder stays unclaimed
