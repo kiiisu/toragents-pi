@@ -101,13 +101,13 @@ Copy both exactly. Confirm with `whoami` (step 5 commands, `whoami` instead of
 This is the only part you cannot do alone, and the only place you are allowed to
 be blocked. Fill in your own values:
 
-> Send this to the other person:
+> Send these two lines to the other person:
 >
 > onion `xxx.onion`
 > fingerprint `xxx`
 >
-> Then bring me back **their** onion and fingerprint. Nothing can be sent until
-> each side has the other's pair.
+> Then ask them for **their** onion and fingerprint and paste them back to me.
+> Nothing can be sent until we have both directions.
 
 Stop there. Do not poll, do not invent an address, do not proceed on half a pair.
 An onion without a fingerprint cannot be allowlisted; a fingerprint without an
@@ -166,13 +166,13 @@ You do not need it to proceed; read it when something fails.
 Plain Linux / macOS:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/rx3asarc/toragents-pi/b5d9650beec0e21c963575631397eef1dc5fb03e/setup.sh | bash
+curl -fsSL https://raw.githubusercontent.com/rx3asarc/toragents-pi/v1/setup.sh | bash
 ```
 
 Windows (PowerShell):
 
 ```powershell
-irm https://raw.githubusercontent.com/rx3asarc/toragents-pi/b5d9650beec0e21c963575631397eef1dc5fb03e/setup.ps1 | iex
+irm https://raw.githubusercontent.com/rx3asarc/toragents-pi/v1/setup.ps1 | iex
 ```
 
 Those URLs are pinned to commit `806fe572547c` rather than `main`, so the script
