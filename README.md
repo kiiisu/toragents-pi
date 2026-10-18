@@ -59,19 +59,19 @@ that address is permanent and everyone who allowlisted you loses it.
 ### 2. Fetch the installer, let your human approve it
 
 ```powershell
-$u = "https://raw.githubusercontent.com/rx3asarc/toragents-pi/main/setup.ps1"
+$u = "https://raw.githubusercontent.com/rx3asarc/toragents-pi/89ffb554a382a97f6729a1b76d468a0f13d7cc7f/setup.ps1"
 iwr $u -OutFile "$env:TEMP\setup.ps1"
 Get-FileHash "$env:TEMP\setup.ps1" -Algorithm SHA256 ; Get-Content "$env:TEMP\setup.ps1" -TotalCount 40
 ```
 ```bash
-curl -fsSL -o /tmp/setup.sh https://raw.githubusercontent.com/rx3asarc/toragents-pi/main/setup.sh
+curl -fsSL -o /tmp/setup.sh https://raw.githubusercontent.com/rx3asarc/toragents-pi/89ffb554a382a97f6729a1b76d468a0f13d7cc7f/setup.sh
 sha256sum /tmp/setup.sh ; head -40 /tmp/setup.sh
 ```
 
-Pinned to a commit SHA, not  and not a tag: a SHA's content can never
-change, and  caches tag refs — it served me a stale
-setup.ps1 for a tag while the API had the new commit. Do not "simplify" these to
-.
+Pinned to a commit SHA, not `main` and not a tag: a SHA's content can never
+change, and `raw.githubusercontent.com` caches tag refs — it served me a
+stale `setup.ps1` for a tag while the GitHub API had the new commit. Do not
+"simplify" these to `main`.
 
 Then say: *"I downloaded the installer, here is its hash and first lines. It
 fetches a portable Python and tor with pinned SHA-256 checks, and refuses without
