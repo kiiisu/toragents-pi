@@ -116,13 +116,46 @@ const ANNOUNCED = join(STATE, "announced.json");
 // the kernel arbitrates for us. No lock is needed to decide ownership: the
 // create either wins or gets EEXIST. announced.json stays as a readable mirror.
 const CLAIM_DIR = join(STATE, "claimed");
+// Delivery that failed permanently goes here. A message that cannot be shown
+// must not look delivered: the peer already has a receipt, so silence is the
+// only thing worse than an error.
+const FAILED_DIR = join(STATE, "failed");
+// A claim with no announced entry is an orphan: the process died between the
+// two writes (or was killed at shutdown). Older than this, it is safe to take.
+const ORPHAN_MS = 5 * 60 * 1000;
+
+/** Who this session is, for the claim record and for doctor. */
+function sessionLabel(): string {
+	const id = (process.env.PI_SESSION_ID || "").replace(/-/g, "");
+	return id ? `pi-${id.slice(0, 8)}` : "pi-unknown";
+}
+
+function failedIds(): Set<string> {
+	try {
+		return new Set(readdirSync(FAILED_DIR).filter((n) => n && !n.startsWith(".")));
+	} catch {
+		return new Set();
+	}
+}
+
+function markFailed(id: string, error: string, from: string): void {
+	try {
+		mkdirSync(FAILED_DIR, { recursive: true });
+		writeFileSync(
+			join(FAILED_DIR, id),
+			JSON.stringify({ at: Date.now(), error: error.slice(0, 300), from, session: sessionLabel() }),
+		);
+	} catch {
+		/* if even this fails, the unclaim below still returns it to PENDING */
+	}
+}
 const LOCK = join(STATE, "announced.lock");
 
 /** True only for the one process that created the claim file. */
 function claim(id: string): boolean {
 	try {
 		mkdirSync(CLAIM_DIR, { recursive: true });
-		writeFileSync(join(CLAIM_DIR, id), String(Date.now()), { flag: "wx" });
+		writeFileSync(join(CLAIM_DIR, id), `${sessionLabel()} ${Date.now()}`, { flag: "wx" });
 		return true;
 	} catch (e: any) {
 		if (e && e.code === "EEXIST") return false;
@@ -266,6 +299,25 @@ function readAnnounced(): Set<string> | null {
 	}
 }
 
+/** Forget a message: memory AND disk. writeAnnounced only ever adds, so an
+ *  in-memory delete was resurrected by the next merge -- which made a failed
+ *  delivery look delivered and never retried. */
+function forget(announced: Set<string>, id: string): void {
+	announced.delete(id);
+	try {
+		withLock(() => {
+			const disk = readAnnounced();
+			if (!disk || !disk.has(id)) return;
+			disk.delete(id);
+			const tmp = `${ANNOUNCED}.tmp`;
+			writeFileSync(tmp, JSON.stringify([...disk]));
+			renameSync(tmp, ANNOUNCED);
+		});
+	} catch {
+		/* the claim release below still prevents duplicate delivery */
+	}
+}
+
 function writeAnnounced(ids: Set<string>): void {
 	// atomic: a truncated announced.json would replay history on next start.
 	// Merged under a lock so two sessions cannot erase each other's ids.
@@ -387,24 +439,34 @@ export default function (pi: ExtensionAPI) {
 			// followUp when busy: never interrupt a turn or wedge the session
 			await pi.sendUserMessage(text, ctx.isIdle() ? undefined : { deliverAs: "followUp" });
 			for (const m of msgs) attempts.delete(m.id);
-		} catch {
+		} catch (err) {
 			// Delivery failed. Retry, but not forever: a permanently failing id
-			// would otherwise re-fire every tick and hammer the session. After a
-			// few tries give up loudly and leave it to /toragents-check.
+			// would otherwise re-fire every tick and hammer the session.
+			//
+			// Giving up must UNMARK. Keeping the claim and the announced entry
+			// while rendering nothing is the one outcome this repo exists to
+			// avoid: every later session skips it, status says undelivered 0,
+			// doctor says delivered, and the peer has a receipt for a message no
+			// model ever saw.
+			const why = err instanceof Error ? err.message : String(err);
 			for (const m of msgs) {
 				const n = (attempts.get(m.id) || 0) + 1;
 				if (n >= 3) {
 					attempts.delete(m.id);
+					unclaim(m.id);
+					forget(announced, m.id);
+					markFailed(m.id, why, m.from_label || m.from_fingerprint || "peer");
 					try {
 						ctx.ui.notify(
-							`toragents: could not deliver ${m.id} after 3 tries; run /toragents-check`,
+							`toragents: could not deliver ${m.id} after 3 tries (${why}). ` +
+								`It is NOT delivered; run /toragents-status, then /toragents-retry`,
 							"warning",
 						);
 					} catch {}
 				} else {
 					attempts.set(m.id, n);
-					announced.delete(m.id); // retry next tick
-					unclaim(m.id);          // and let another session take it
+					forget(announced, m.id);  // retry next tick (disk too: merge would undo it)
+					unclaim(m.id); // and let another session take it
 				}
 			}
 		}
@@ -424,7 +486,10 @@ export default function (pi: ExtensionAPI) {
 				RECEIVE === "targeted"
 					? messages.filter((m) => (m.to_session || "").trim() !== "" && addressedToMe(m))
 					: messages;
-			const fresh = wanted.filter((m) => !announced.has(m.id) && addressedToMe(m));
+			const failed = failedIds();
+			const fresh = wanted.filter(
+				(m) => !announced.has(m.id) && !failed.has(m.id) && addressedToMe(m),
+			);
 			// Nothing new. Deliberately no pruning: dropping ids whose files are
 			// gone would re-deliver them if an archive is ever restored.
 			if (fresh.length === 0) return;
@@ -446,6 +511,30 @@ export default function (pi: ExtensionAPI) {
 		} catch {
 			/* daemon will create it */
 		}
+		// Reconcile before adopting: a claim with no announced entry means a
+		// process died between claiming and recording it. Nobody can deliver that
+		// message -- every session sees EEXIST, adoption skips it, and no command
+		// in the product can clear it. Take stale ones back.
+		let healed = 0;
+		const onDisk = readAnnounced(); // the authority: other sessions write it
+		try {
+			for (const id of readdirSync(CLAIM_DIR)) {
+				if (onDisk?.has(id)) continue;
+				try {
+					const age = Date.now() - statSync(join(CLAIM_DIR, id)).mtimeMs;
+					if (age > ORPHAN_MS) {
+						unclaim(id);
+						healed++;
+					}
+				} catch {
+					/* vanished: nothing to heal */
+				}
+			}
+		} catch {
+			/* no claims yet */
+		}
+		if (healed > 0) seedNotice = `${healed} stale claim(s) released for delivery`;
+
 		const prior = readAnnounced();
 		if (prior) {
 			announced = prior;
@@ -468,7 +557,8 @@ export default function (pi: ExtensionAPI) {
 			writeAnnounced(announced);
 			if (adopted.length > 0) {
 				const held = ids.length - adopted.length;
-				seedNotice =
+				seedNotice +=
+					(seedNotice ? "; " : "") +
 					`${adopted.length} existing message(s) marked as already seen` +
 					(held > 0 ? `; ${held} held by another session` : "");
 			}
@@ -534,17 +624,43 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
+	pi.registerCommand("toragents-retry", {
+		description: "Retry messages that failed to deliver",
+		handler: async (_args, ctx) => {
+			const ids = [...failedIds()];
+			let cleared = 0;
+			for (const id of ids) {
+				try {
+					unlinkSync(join(FAILED_DIR, id));
+					cleared++;
+				} catch {
+					/* already gone */
+				}
+			}
+			try {
+				ctx.ui.notify(
+					cleared === 0
+						? "toragents: nothing to retry"
+						: `toragents: ${cleared} message(s) queued for delivery again`,
+					"info",
+				);
+			} catch {}
+		},
+	});
+
 	pi.registerCommand("toragents-status", {
 		description: "Show Tor inbox watching state",
 		handler: async (_args, ctx) => {
 			const { messages } = scanInbox();
-			const unread = messages.filter((m) => !announced.has(m.id)).length;
+			const failed = failedIds();
+			const unread = messages.filter((m) => !announced.has(m.id) && !failed.has(m.id)).length;
 			const lines = [
 				`watching    ${timer ? "yes" : "no"} every ${POLL_MS}ms`,
 				`inbox       ${INBOX}`,
 				`resolved by ${RESOLVED.why}`,
 				`on disk     ${messages.length}`,
 				`undelivered ${unread}`,
+				`failed      ${failed.size}${failed.size ? " (" + [...failed].join(", ") + ")" : ""}${failed.size ? " -- /toragents-retry" : ""}`,
 				`state       ${existsSync(ANNOUNCED) ? "memo present" : "memo missing (will seed)"}`,
 			];
 			try {

@@ -598,19 +598,43 @@ def cmd_doctor(a):
         print("               Re-run the installer, or copy toragents_watch.ts there.")
     print(f"  pi dir       {'present' if os.path.isdir(os.path.join(home, '.pi')) else 'MISSING'}")
 
-    # Who took the mail. pi can run several sessions on one box and untargeted
-    # mail is first-come, so without this "nothing arrived" and "the other
-    # window took it" are the same observation.
+    # Who took the mail, read from the claim files themselves. The extension
+    # writes "<session> <ms>" when it claims a message, so this needs no second
+    # file and survives announced.json being lost. (The previous version read
+    # delivered_by.json, whose only writer was the hook -- so on every pi-only
+    # machine this section printed nothing and claimed otherwise.)
     try:
-        import json as _j
-        rec = _j.load(open(os.path.join(state, "delivered_by.json"), encoding="utf-8"))
-        recent = sorted(rec.items(), key=lambda kv: kv[1].get("at", ""), reverse=True)[:5]
-        if recent:
-            print("\n  recently delivered by")
-            for mid, meta in recent:
-                print(f"  {mid:14} {meta.get('at','?')}  by {meta.get('by','?')}")
-    except (OSError, ValueError):
+        claim_dir = os.path.join(state, "claimed")
+        claims = []
+        for name in os.listdir(claim_dir):
+            try:
+                with open(os.path.join(claim_dir, name), encoding="utf-8") as f:
+                    who = f.read().strip()
+            except OSError:
+                who = "?"
+            parts = who.split()
+            claims.append((int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0,
+                           name, parts[0] if parts else "?"))
+        claims.sort(reverse=True)
+        print(f"  claimed      {len(claims)} message(s) owned")
+        if claims:
+            print("  recently delivered by")
+            for _ts, mid, who in claims[:5]:
+                when = time.strftime("%H:%M", time.localtime(_ts / 1000)) if _ts else "?"
+                print(f"  {mid:14} {when}  by {who}")
+    except FileNotFoundError:
         pass
+    except OSError:
+        pass
+
+    # Failures must be visible somewhere, or "delivered" is a lie.
+    try:
+        failed = sorted(os.listdir(os.path.join(state, "failed")))
+    except OSError:
+        failed = []
+    if failed:
+        print(f"  failed       {len(failed)}: {', '.join(failed[:5])}")
+        print("               NOT delivered. Run /toragents-retry inside pi.")
 
     # What is sitting there, and whether the extension has already announced it.
     print("\n  waiting")

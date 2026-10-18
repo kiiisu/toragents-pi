@@ -124,8 +124,8 @@ a file, pass the path.
 | `inbox doctor` | is the receiving half wired up on this machine |
 | `inbox reach --to <label>` | measure whether they are reachable right now |
 
-Inside pi: `/toragents-check`, `/toragents-status`, `/toragents-mute`,
-`/toragents-unmute`.
+Inside pi: `/toragents-status` (including failed messages),
+`/toragents-retry`, `/toragents-mute`, `/toragents-unmute`.
 
 ## When nothing arrives
 
@@ -213,14 +213,28 @@ unit points at *this* directory, not merely that something called
 ## Verification
 
 ```bash
+python3 tools/test_wire.py   # 6 checks: framing, signing, allowlist, tamper, replay
 bun tools/test_watch.ts      # 8 checks: delivery, dedupe, mute, header shape
 bun tools/test_race.ts       # 3 checks: two sessions, one inbox, exactly once
-bun tools/test_firstrun.ts   # 1 check:  first install must not swallow new mail
-python3 tools/test_wire.py   # framing, signing, allowlist, tamper rejection
+bun tools/test_firstrun.ts   # first install must not swallow new mail
+bun tools/test_failure.ts    # a failed delivery must not look delivered
+bun tools/test_orphan.ts     # a crash mid-delivery must not strand a message
 ```
 
 The race test is the one worth understanding: with the claim disabled it
 delivers twice, which is how it was proven able to fail.
+
+**Failure is a first-class state.** If a message cannot be handed to the model
+after three attempts, it is *unclaimed*, removed from `announced.json`, and
+recorded in `state/failed/<id>` with the error. `/toragents-status` lists it,
+`inbox doctor` lists it, and `/toragents-retry` puts it back in the queue. The
+alternative — keeping it marked delivered — gives the sender a receipt for a
+message no model ever saw, which is the one failure this channel must never
+report as success.
+
+**A crash between claiming and delivering self-heals.** Claims older than five
+minutes with no matching announcement are released at session start, so a
+`kill -9` cannot strand mail that no command could clear.
 
 ## How it works, in one paragraph
 
