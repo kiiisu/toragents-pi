@@ -28,6 +28,27 @@ gets a real push. One harness, one failure surface, one thing to verify.
 - **pi** (any recent version). Nothing else — no Python, no tor, no compiler.
   The installer brings a portable Python and a tor binary, both hash-verified.
 
+## Spawn an agent and let it do this
+
+The whole pairing is written down as a runbook an agent can follow on its own,
+including the parts where it has to stop and ask a human:
+
+```
+Read https://github.com/rx3asarc/toragents-pi/blob/main/AGENT-SETUP.md and set
+this machine up exactly as it says. Tell me what you need from me when you need
+it, and do not guess any value I have not given you.
+```
+
+That is genuinely the whole prompt. [AGENT-SETUP.md](AGENT-SETUP.md) walks the
+agent through: which side it is, fetching and showing the installer for approval,
+reading the onion and fingerprint, the relay message to give its human, waiting
+for the other side's two values, `add-peer`, `reach`, a handshake message, and
+confirming arrival in both directions — plus what each failure means.
+
+The relay is the only step no agent can do alone, and it is deliberately the
+human's: the two people exchange fingerprints over a channel they already trust.
+The runbook tells the agent to stop there and say exactly what to ask for.
+
 ## Install
 
 Plain Linux / macOS:

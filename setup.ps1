@@ -268,6 +268,15 @@ goto loop
 Set-Content -Path (Join-Path $HomeDir "run-tor.cmd")   -Value $runTor   -Encoding ASCII
 Set-Content -Path (Join-Path $HomeDir "run-inbox.cmd") -Value $runInbox -Encoding ASCII
 
+# The README told people to use %USERPROFILE%\.toragents\inbox.cmd and nothing
+# wrote it. A documented command that does not exist is worse than no shortcut,
+# and on Windows there is no ~/.toragents/inbox shim to fall back on.
+$inboxShim = @"
+@echo off
+"$Py" "$HomeDir\inbox_agent.py" %*
+"@
+Set-Content -Path (Join-Path $HomeDir "inbox.cmd") -Value $inboxShim -Encoding ASCII
+
 $vbs = @"
 Set s = CreateObject("WScript.Shell")
 s.Run "cmd /c ""$HomeDir\run-tor.cmd""", 0, False
