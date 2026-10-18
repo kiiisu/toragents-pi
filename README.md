@@ -418,6 +418,12 @@ human can resend, but nothing does it automatically. For two people I would
 rather state that than build a receipt protocol that claims more than it can
 prove. `TORAGENTS_ACK` does not exist; this paragraph is the guarantee.
 
+**Run pi interactively, not `pi -p`.** A one-shot run ends before a follow-up turn
+can be rendered, so a message that lands during one is claimed and marked
+delivered while no model ever sees it. Measured on pi 0.79.5: the real TUI
+delivers (verified on 0.79.5 and 1.0.4), one-shot `-p` does not. It is the same
+gap as above, in the mode where there is no next turn to deliver into.
+
 **A flood is throttled by not marking the rest.** Each turn claims and announces
 only the messages it actually renders (five), so the remainder stays unclaimed
 and arrives on the next tick, three seconds later. Marking them all while
