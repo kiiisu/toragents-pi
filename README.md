@@ -256,6 +256,7 @@ bun tools/test_orphan.ts     # a crash mid-delivery must not strand a message
 bun tools/test_batch.ts      # a flood marks only what it rendered
 bun tools/test_stuck.ts      # an unwritable state dir must not loop forever
 python3 tools/test_doctor.py # PENDING vs for-session vs UNROUTABLE
+bun tools/test_session_label.ts # a nested pi must not inherit its parent's name
 ```
 
 The race test is the one worth understanding: with the claim disabled it

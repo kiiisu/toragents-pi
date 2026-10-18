@@ -128,10 +128,39 @@ const INFO_FILE = join(STATE, "extension.json");
 // two writes (or was killed at shutdown). Older than this, it is safe to take.
 const ORPHAN_MS = 5 * 60 * 1000;
 
-/** Who this session is, for the claim record and for doctor. */
+/**
+ * Who this session is, for the claim record, for doctor, and for addressing.
+ *
+ * Deliberately NOT from PI_SESSION_ID alone. pi exports PI_SESSION_ID to its
+ * children, and a pi started from inside another agent session INHERITS that
+ * variable -- so process.env.PI_SESSION_ID can name a different process than the
+ * one running this code. Two windows would share one label, and under
+ * TORAGENTS_RECEIVE=targeted either could claim mail addressed to the other.
+ *
+ * ctx.sessionManager.getSessionId() is this process's own id. It is set at
+ * session_start, before the first poll, so claims always see the real answer.
+ */
+let MY_SESSION = "";
 function sessionLabel(): string {
-	const id = (process.env.PI_SESSION_ID || "").replace(/-/g, "");
-	return id ? `pi-${id.slice(0, 8)}` : "pi-unknown";
+	// Never the literal "unknown": a claim has to say WHICH process holds it, or
+	// two unnamed windows look identical on disk and the orphan heal cannot tell
+	// a live owner from a dead one.
+	return MY_SESSION || `pid-${process.pid}`;
+}
+
+/** Resolve once, from the most authoritative source available. */
+function resolveSession(ctx?: any): string {
+	const explicit = (process.env.TORAGENTS_SESSION || "").trim();
+	if (explicit) return explicit.slice(0, 64);
+	let own = "";
+	try {
+		own = String(ctx?.sessionManager?.getSessionId?.() ?? "").trim();
+	} catch {
+		own = "";
+	}
+	// Fall back to the environment only when the context cannot answer.
+	const id = (own || process.env.PI_SESSION_ID || "").replace(/-/g, "");
+	return id ? `pi-${id.slice(0, 8)}` : "";
 }
 
 function failedIds(): Set<string> {
@@ -222,23 +251,7 @@ function withLock<T>(fn: () => T): T {
 	}
 }
 const POLL_MS = Number(process.env.TORAGENTS_POLL_MS || 3000);
-/** This session's name, for addressing only (TORAGENTS_SESSION). */
-function autoSession(): string {
-	const explicit = (process.env.TORAGENTS_SESSION || "").trim();
-	if (explicit) return explicit.slice(0, 64);
-	// pi only. There is no other harness to name: this file is loaded by pi, so
-	// PI_SESSION_ID is the only session identity that can exist here. Keeping
-	// other harnesses' variables would be dead branches pretending to be support.
-	const id = (process.env.PI_SESSION_ID || "").trim();
-	if (id) return `pi-${id.replace(/-/g, "").slice(0, 8)}`;
-	return "";
-}
 
-/**
- * Which session we are, derived from what the harness already tells its
- * children. Nobody types a name; two sessions on one machine still differ.
- */
-const MY_SESSION = autoSession();
 const MAX_BODY = 4000;
 const MAX_BATCH = 5;
 
@@ -569,6 +582,9 @@ export default function (pi: ExtensionAPI) {
 			/* no claims yet */
 		}
 		if (healed > 0) seedNotice = `${healed} stale claim(s) released for delivery`;
+
+		// Who we are, before anything writes a claim or a report.
+		MY_SESSION = resolveSession(ctx);
 
 		// Publish our resolved configuration before anything else: doctor's labels
 		// must describe what this process does, not what some shell exported.
