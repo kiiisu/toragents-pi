@@ -31,6 +31,28 @@ def run(receive, state, extension_reports=None):
     return subprocess.run([sys.executable, os.path.join(HERE, "inbox_agent.py"), "doctor"],
                           env=env, capture_output=True, text=True).stdout
 
+def run_split_state():
+    """pi resolved its default state; doctor was told a different one.
+
+    This is the real split: TORAGENTS_STATE exported in the shell that runs
+    doctor, absent from the environment pi was launched with. doctor must find
+    the report where the EXTENSION wrote it, warn, and read that state.
+    """
+    fake_home = tempfile.mkdtemp(prefix="toragents-home-")
+    other = tempfile.mkdtemp(prefix="toragents-other-")
+    ext_state = os.path.join(fake_home, ".toragents", "state")
+    os.makedirs(os.path.join(ext_state, "inbox"))
+    with open(os.path.join(ext_state, "inbox", "1-x1.json"), "w") as f:
+        json.dump({"id": "x1", "received": 1, "from_label": "peer"}, f)
+    with open(os.path.join(ext_state, "extension.json"), "w") as f:
+        json.dump({"session": "pi-aaaa1111", "receive": "targeted",
+                   "state": ext_state, "pid": 1, "at": 1792325000000}, f)
+    env = dict(os.environ, HOME=fake_home, TORAGENTS_STATE=other)
+    env.pop("TORAGENTS_HOME", None)
+    return subprocess.run([sys.executable, os.path.join(HERE, "inbox_agent.py"), "doctor"],
+                          env=env, capture_output=True, text=True).stdout, other, ext_state
+
+
 H = tempfile.mkdtemp(prefix="toragents-doctor-")
 inbox = os.path.join(H, "state", "inbox")
 os.makedirs(inbox)
@@ -51,6 +73,21 @@ quiet_mode = run("targeted", H)
 shell_says_all_ext_says_targeted = run(None, H, extension_reports="targeted")
 # and the inverse: doctor's shell exports targeted, but pi resolved "all"
 shell_says_targeted_ext_says_all = run("targeted", H, extension_reports="all")
+
+def run_pi_dir_override():
+    """pi honours PI_CODING_AGENT_DIR; doctor must not pronounce on ~/.pi/agent."""
+    override = tempfile.mkdtemp(prefix="toragents-pidir-")
+    os.makedirs(os.path.join(override, "extensions"))
+    open(os.path.join(override, "extensions", "toragents-inbox.ts"), "w").close()
+    env = dict(os.environ, PI_CODING_AGENT_DIR=override,
+               TORAGENTS_STATE=os.path.join(H, "state"), TORAGENTS_HOME=H)
+    return subprocess.run([sys.executable, os.path.join(HERE, "inbox_agent.py"), "doctor"],
+                          env=env, capture_output=True, text=True).stdout, override
+
+
+split_out, split_other, split_ext = run_split_state()
+pidir_out, pidir = run_pi_dir_override()
+
 
 def line_for(out, mid):
     # Match the message row, not any line that happens to contain the id as a
@@ -74,6 +111,12 @@ checks = [
     ("label follows the EXTENSION, not doctor's shell 2",
      "PENDING" in line_for(shell_says_targeted_ext_says_all, "a1")
      and "UNROUTABLE" not in line_for(shell_says_targeted_ext_says_all, "a1")),
+    ("report found where the EXTENSION wrote it", "from extension.json" in split_out),
+    ("doctor warns when the states differ", "WARNING" in split_out and split_ext in split_out),
+    ("and labels from the extension's state, not its own",
+     "UNROUTABLE" in line_for(split_out, "x1")),
+    ("pi config dir honours PI_CODING_AGENT_DIR",
+     pidir in pidir_out and "from PI_CODING_AGENT_DIR" in pidir_out),
     ("doctor says where the resolution came from",
      "extension.json" in shell_says_all_ext_says_targeted
      and "from env" in open_mode),

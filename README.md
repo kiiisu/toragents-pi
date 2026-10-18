@@ -163,6 +163,19 @@ That distinction matters: `TORAGENTS_RECEIVE` is read by the pi process, and a
 shell you open later may have it unset or set differently — so trusting the
 shell would label mail `PENDING` that the extension will never claim.
 
+Two further cases where the extension's view can differ from `doctor`'s, both
+stated rather than assumed:
+
+```
+WARNING      the extension watches /home/you/.toragents/state
+             this command looked in /tmp/other
+```
+
+If the report names a different state directory, `doctor` says so and then reads
+*that* one — because the labels describe the extension, not the command. And it
+resolves the extension path from `PI_CODING_AGENT_DIR` when set, printing which
+directory it used, instead of assuming `~/.pi/agent`.
+
 `PENDING` with the extension installed means the session has not polled yet —
 restart pi. `MISSING` on the extension line is the one failure that cannot fix
 itself: re-run the installer.

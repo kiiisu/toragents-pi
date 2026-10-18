@@ -576,13 +576,45 @@ def cmd_doctor(a):
     # back to env only when there is no report, and say which one was used.
     global MY_SESSION, RECEIVE_TARGETED
     ext_info, ext_source = None, "env (extension has never reported)"
-    try:
-        with open(os.path.join(state, "extension.json"), encoding="utf-8") as f:
-            ext_info = json.load(f)
+    # The extension resolves its state directory by its own rules (explicit
+    # TORAGENTS_STATE, then TORAGENTS_HOME/state, then a scored choice among the
+    # defaults). Reading the report from doctor's default two-line guess meant
+    # that on any machine where those differ -- which is the whole reason the
+    # extension has scoring -- doctor found nothing and fell back to the shell.
+    candidates = []
+    if os.environ.get("TORAGENTS_STATE"):
+        candidates.append(os.environ["TORAGENTS_STATE"])
+    if os.environ.get("TORAGENTS_HOME"):
+        candidates.append(os.path.join(os.environ["TORAGENTS_HOME"], "state"))
+    candidates.append(state)
+    candidates.append(os.path.join(os.path.expanduser("~"), ".toragents", "state"))
+    candidates.append("/var/lib/toragents-inbox")
+    seen, uniq = set(), []
+    for c in candidates:
+        if c and c not in seen:
+            seen.add(c)
+            uniq.append(c)
+    for cand in uniq:
+        try:
+            with open(os.path.join(cand, "extension.json"), encoding="utf-8") as f:
+                ext_info = json.load(f)
+        except (OSError, ValueError, TypeError):
+            continue
         when = time.strftime("%H:%M", time.localtime(float(ext_info.get("at", 0)) / 1000))
         ext_source = f"extension.json (last seen {when})"
-    except (OSError, ValueError, TypeError):
-        ext_info = None
+        reported_state = str(ext_info.get("state") or "").strip()
+        if reported_state and reported_state != state:
+            # The extension is watching a different directory than this command
+            # is inspecting. Say so and read ITS state, because that is the world
+            # the labels are supposed to describe.
+            print(f"  WARNING      the extension watches {reported_state}")
+            print(f"               this command looked in {state}")
+            state = reported_state
+            inbox = os.path.join(state, "inbox")
+        break
+    if ext_info is None:
+        state_line = state
+        print(f"  state        {state_line}")
     if isinstance(ext_info, dict):
         MY_SESSION = str(ext_info.get("session") or "").strip()
         RECEIVE_TARGETED = str(ext_info.get("receive") or "all").strip().lower() == "targeted"
@@ -596,7 +628,8 @@ def cmd_doctor(a):
         except OSError:
             return -1
 
-    print(f"  state        {state}")
+    if ext_info is not None:
+        print(f"  state        {state}")
     n_inbox = count(inbox)
     print(f"  inbox        {'no directory yet (nothing has arrived)' if n_inbox < 0 else str(n_inbox) + ' file(s) waiting'}")
     try:
@@ -612,7 +645,11 @@ def cmd_doctor(a):
 
     # The only thing that turns a file into a message the agent can see.
     print("\n  pi extension")
-    ext = os.path.join(home, ".pi", "agent", "extensions", "toragents-inbox.ts")
+    # pi honours PI_CODING_AGENT_DIR; assuming ~/.pi/agent is the same class of
+    # mistake as assuming a settings file path. Resolve it, and say which.
+    pi_dir = os.environ.get("PI_CODING_AGENT_DIR") or os.path.join(home, ".pi", "agent")
+    ext_dir = os.path.join(pi_dir, "extensions")
+    ext = os.path.join(ext_dir, "toragents-inbox.ts")
     if os.path.exists(ext):
         size = os.path.getsize(ext)
         print(f"  installed    {ext} ({size} bytes)")
@@ -620,7 +657,9 @@ def cmd_doctor(a):
         print(f"  MISSING      {ext}")
         print("               messages will pile up and never reach the session.")
         print("               Re-run the installer, or copy toragents_watch.ts there.")
-    print(f"  pi dir       {'present' if os.path.isdir(os.path.join(home, '.pi')) else 'MISSING'}")
+    print(f"  pi dir       {pi_dir} "
+          f"({'present' if os.path.isdir(pi_dir) else 'MISSING'}"
+          f"{', from PI_CODING_AGENT_DIR' if os.environ.get('PI_CODING_AGENT_DIR') else ''})")
     print(f"  resolves     receive={('targeted' if RECEIVE_TARGETED else 'all')} "
           f"session={MY_SESSION or '(none)'} -- from {ext_source}")
 
