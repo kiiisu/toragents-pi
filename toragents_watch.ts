@@ -35,6 +35,7 @@
  */
 
 import {
+	appendFileSync,
 	existsSync,
 	mkdirSync,
 	readFileSync,
@@ -126,6 +127,57 @@ const FAILED_DIR = join(STATE, "failed");
 // doctor can only read its own shell, which is a different environment from the
 // one pi runs with -- and then its labels describe the wrong configuration.
 const INFO_FILE = join(STATE, "extension.json");
+
+/**
+ * What was SAID, not what the agent did to say it. Only two things ever cross
+ * the wire: a body we sent and a body we received. So a log of those two is,
+ * by construction, the final-answers-only view -- thinking and tool churn never
+ * appear in it because they never leave the machine.
+ */
+const CHAT_FILE = join(STATE, "chat.jsonl");
+const CHAT_SHOWN = 12;
+
+function logSaid(dir: "in" | "out", peer: string, body: string, id: string) {
+	try {
+		mkdirSync(STATE, { recursive: true });
+		appendFileSync(
+			CHAT_FILE,
+			JSON.stringify({ at: Date.now(), dir, peer, id, body: String(body).slice(0, 2000) }) + "\n",
+		);
+	} catch {
+		/* the transcript is a convenience; never let it break a delivery */
+	}
+}
+
+function saidLog(): Array<{ at: number; dir: string; peer: string; body: string }> {
+	try {
+		return readFileSync(CHAT_FILE, "utf8")
+			.split("\n")
+			.filter(Boolean)
+			.slice(-200)
+			.map((l) => JSON.parse(l));
+	} catch {
+		return [];
+	}
+}
+
+/** Plain text lines, so this can be tested and printed without a TUI. */
+export function renderChat(width = 56): string[] {
+	const rows = saidLog().slice(-CHAT_SHOWN);
+	if (rows.length === 0) return [" toragents · no messages yet"];
+	const out: string[] = [];
+	for (const r of rows) {
+		const when = new Date(r.at).toTimeString().slice(0, 5);
+		const who = `${r.dir === "out" ? "→" : "←"} ${r.peer}  ${when}`;
+		out.push(` ${who}`);
+		const flat = r.body.replace(/\s+/g, " ").trim();
+		const room = Math.max(20, width - 4);
+		for (let i = 0; i < flat.length && i < room * 2; i += room) {
+			out.push(`   ${flat.slice(i, i + room)}`);
+		}
+	}
+	return out;
+}
 // A claim with no announced entry is an orphan: the process died between the
 // two writes (or was killed at shutdown). Older than this, it is safe to take.
 const ORPHAN_MS = 5 * 60 * 1000;
@@ -464,7 +516,11 @@ export default function (pi: ExtensionAPI) {
 		try {
 			// followUp when busy: never interrupt a turn or wedge the session
 			await pi.sendUserMessage(text, ctx.isIdle() ? undefined : { deliverAs: "followUp" });
-			for (const m of msgs) attempts.delete(m.id);
+			for (const m of msgs) {
+				attempts.delete(m.id);
+				logSaid("in", m.from_label || m.from_fingerprint || "peer", m.body, m.id);
+			}
+			paintChat(ctx);
 		} catch (err) {
 			// Delivery failed. Retry, but not forever: a permanently failing id
 			// would otherwise re-fire every tick and hammer the session.
@@ -504,6 +560,23 @@ export default function (pi: ExtensionAPI) {
 					unclaim(m.id); // and let another session take it
 				}
 			}
+		}
+	};
+
+	/** Side panel on by default; /toragents-chat hides it. */
+	let CHAT_WIDGET = true;
+
+	/** Keep the side panel current; safe to call from anywhere. */
+	let lastCtx: ExtensionContext | null = null;
+	const paintChat = (ctx?: ExtensionContext) => {
+		if (ctx) lastCtx = ctx;
+		const c = ctx || lastCtx;
+		if (!c || !CHAT_WIDGET) return;
+		try {
+			if (!c.hasUI) return;
+			c.ui.setWidget("toragents-chat", renderChat(), { placement: "belowEditor" });
+		} catch {
+			/* no UI, or the widget is not supported on this pi */
 		}
 	};
 
@@ -587,6 +660,7 @@ export default function (pi: ExtensionAPI) {
 
 		// Who we are, before anything writes a claim or a report.
 		MY_SESSION = resolveSession(ctx);
+		paintChat(ctx);
 
 		// Publish our resolved configuration before anything else: doctor's labels
 		// must describe what this process does, not what some shell exported.
@@ -711,6 +785,8 @@ export default function (pi: ExtensionAPI) {
 				} catch {
 					/* some daemon errors print prose; the id is best effort */
 				}
+				logSaid("out", String(params.to), String(params.body ?? ""), id);
+				paintChat();
 				return {
 					content: [
 						{
@@ -723,6 +799,18 @@ export default function (pi: ExtensionAPI) {
 					details: { to: params.to, id, ok: true },
 				};
 			},
+	});
+
+	pi.registerCommand("toragents-chat", {
+		description: "Show or hide the Tor conversation panel beside the editor",
+		handler: async (_args: any, ctx: any) => {
+			CHAT_WIDGET = !CHAT_WIDGET;
+			try {
+				if (!CHAT_WIDGET) ctx.ui.setWidget("toragents-chat", undefined);
+				else paintChat(ctx);
+				ctx.ui.notify(`toragents: conversation panel ${CHAT_WIDGET ? "shown" : "hidden"}`, "info");
+			} catch {}
+		},
 	});
 
 	// Manual check that does not wait for the next tick.
@@ -787,6 +875,15 @@ export default function (pi: ExtensionAPI) {
 						: `toragents: ${cleared} message(s) queued for delivery again`,
 					"info",
 				);
+			} catch {}
+		},
+	});
+
+	pi.registerCommand("toragents-said", {
+		description: "Print the conversation transcript (what was said, both directions)",
+		handler: async (_args: any, ctx: any) => {
+			try {
+				ctx.ui.notify(renderChat(72).join("\n"), "info");
 			} catch {}
 		},
 	});
