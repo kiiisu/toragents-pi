@@ -569,10 +569,26 @@ def cmd_doctor(a):
     home = os.path.expanduser("~")
     state = STATE
     inbox = os.path.join(state, "inbox")
-    # Same inputs the extension reads, so the labels below match what it will do.
+    # The extension resolves RECEIVE from the PI process's environment. doctor
+    # usually runs in a different shell, where the same variable may be set,
+    # unset, or set differently -- so its own env is NOT evidence of what the
+    # extension does. Prefer what the extension published at session start; fall
+    # back to env only when there is no report, and say which one was used.
     global MY_SESSION, RECEIVE_TARGETED
-    MY_SESSION = (os.environ.get("TORAGENTS_SESSION") or "").strip() or auto_session()
-    RECEIVE_TARGETED = (os.environ.get("TORAGENTS_RECEIVE") or "all").strip().lower() == "targeted"
+    ext_info, ext_source = None, "env (extension has never reported)"
+    try:
+        with open(os.path.join(state, "extension.json"), encoding="utf-8") as f:
+            ext_info = json.load(f)
+        when = time.strftime("%H:%M", time.localtime(float(ext_info.get("at", 0)) / 1000))
+        ext_source = f"extension.json (last seen {when})"
+    except (OSError, ValueError, TypeError):
+        ext_info = None
+    if isinstance(ext_info, dict):
+        MY_SESSION = str(ext_info.get("session") or "").strip()
+        RECEIVE_TARGETED = str(ext_info.get("receive") or "all").strip().lower() == "targeted"
+    else:
+        MY_SESSION = (os.environ.get("TORAGENTS_SESSION") or "").strip() or auto_session()
+        RECEIVE_TARGETED = (os.environ.get("TORAGENTS_RECEIVE") or "all").strip().lower() == "targeted"
 
     def count(d):
         try:
@@ -605,6 +621,8 @@ def cmd_doctor(a):
         print("               messages will pile up and never reach the session.")
         print("               Re-run the installer, or copy toragents_watch.ts there.")
     print(f"  pi dir       {'present' if os.path.isdir(os.path.join(home, '.pi')) else 'MISSING'}")
+    print(f"  resolves     receive={('targeted' if RECEIVE_TARGETED else 'all')} "
+          f"session={MY_SESSION or '(none)'} -- from {ext_source}")
 
     # Who took the mail, read from the claim files themselves. The extension
     # writes "<session> <ms>" when it claims a message, so this needs no second

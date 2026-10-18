@@ -150,6 +150,19 @@ Three labels, three different meanings, and only one of them will fix itself:
 | `for pi-9e83f4aa` | addressed to another session on this machine. Not yours to see. |
 | `UNROUTABLE` | untargeted mail while `TORAGENTS_RECEIVE=targeted`. No tick, retry or restart will deliver it — that is what targeted mode means. |
 
+Those labels come from what the **extension reported at session start**
+(`state/extension.json`), not from the environment `doctor` happens to be running
+in. Doctor prints which source it used:
+
+```
+resolves     receive=targeted session=pi-01a14a4c -- from extension.json (last seen 14:32)
+resolves     receive=all session=pi-01a14a4c -- from env (extension has never reported)
+```
+
+That distinction matters: `TORAGENTS_RECEIVE` is read by the pi process, and a
+shell you open later may have it unset or set differently — so trusting the
+shell would label mail `PENDING` that the extension will never claim.
+
 `PENDING` with the extension installed means the session has not polled yet —
 restart pi. `MISSING` on the extension line is the one failure that cannot fix
 itself: re-run the installer.

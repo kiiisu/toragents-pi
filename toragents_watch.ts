@@ -120,6 +120,10 @@ const CLAIM_DIR = join(STATE, "claimed");
 // must not look delivered: the peer already has a receipt, so silence is the
 // only thing worse than an error.
 const FAILED_DIR = join(STATE, "failed");
+// What THIS process actually resolved, published for `inbox doctor`. Without it
+// doctor can only read its own shell, which is a different environment from the
+// one pi runs with -- and then its labels describe the wrong configuration.
+const INFO_FILE = join(STATE, "extension.json");
 // A claim with no announced entry is an orphan: the process died between the
 // two writes (or was killed at shutdown). Older than this, it is safe to take.
 const ORPHAN_MS = 5 * 60 * 1000;
@@ -570,6 +574,24 @@ export default function (pi: ExtensionAPI) {
 			/* no claims yet */
 		}
 		if (healed > 0) seedNotice = `${healed} stale claim(s) released for delivery`;
+
+		// Publish our resolved configuration before anything else: doctor's labels
+		// must describe what this process does, not what some shell exported.
+		try {
+			mkdirSync(STATE, { recursive: true });
+			writeFileSync(
+				INFO_FILE,
+				JSON.stringify({
+					session: sessionLabel(),
+					receive: RECEIVE,
+					state: STATE,
+					pid: process.pid,
+					at: Date.now(),
+				}),
+			);
+		} catch {
+			/* doctor falls back to its own environment and says so */
+		}
 
 		const prior = readAnnounced();
 		if (prior) {
