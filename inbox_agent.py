@@ -1,0 +1,841 @@
+#!/usr/bin/env python3
+"""inbox_agent.py -- a verified message inbox behind a tor hidden service.
+
+Runs on HER machine. Listens on a plain localhost TCP port; tor forwards the
+hidden service to it. Serving needs no tor API at all -- no control port, no
+ADD_ONION, no keys to manage. Only outbound sends touch tor, via SOCKS.
+
+Security model
+    A message is accepted only if the sender proves possession of an
+    allowlisted Ed25519 key over a one-use nonce. The sender's claimed onion
+    address is never trusted for routing.
+
+Usage
+    inbox_agent.py serve                 run the daemon
+    inbox_agent.py whoami                print this machine's onion + fingerprint
+    inbox_agent.py add-peer FP --onion A allow a peer to send
+    inbox_agent.py peers
+    inbox_agent.py inbox
+    inbox_agent.py read <id>
+    inbox_agent.py ack <id>
+    inbox_agent.py send --to LABEL --body TEXT
+"""
+import argparse
+import base64
+import hashlib
+import json
+import os
+import re
+import secrets
+import shutil
+import subprocess
+import socket
+import sys
+import threading
+import time
+import uuid
+
+from wire import AgentKeys, PublicIdentity
+
+HOME = os.environ.get("TORAGENTS_HOME", os.path.expanduser("~/.toragents"))
+# TORAGENTS_STATE wins over $HOME/state so this CLI can operate on a flat state
+# directory (the layout listener.py uses on the box). Without it the two tools
+# disagree about where identity.json lives, and whoami silently mints a
+# throwaway key and signs with the wrong one.
+STATE = os.environ.get("TORAGENTS_STATE") or os.path.join(HOME, "state")
+INBOX = os.path.join(STATE, "inbox")
+ARCHIVE = os.path.join(STATE, "archive")
+PEERS = os.path.join(STATE, "peers.json")
+IDFILE = os.path.join(STATE, "identity.json")
+HOSTNAME_FILE = os.path.join(HOME, "hs", "hostname")
+
+CONFIG = os.path.join(STATE, "config.json")
+
+
+def _installed_config():
+    """Read the ports the installer actually configured.
+
+    This exists because the CLI and the daemon must agree on the SOCKS port and
+    the daemon is the only one that gets TORAGENTS_SOCKS from its service unit.
+    The old fallback was 9050 while the installer writes 9061, so every bare
+    `send`/`inbox` died with "Connection refused" until the user exported the
+    variable by hand. Env still wins; the recorded config is the fallback.
+    """
+    try:
+        with open(CONFIG) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+_cfg = _installed_config()
+LISTEN_PORT = int(os.environ.get("TORAGENTS_PORT") or _cfg.get("local_port") or 8799)
+SOCKS_PORT = int(os.environ.get("TORAGENTS_SOCKS") or _cfg.get("socks_port") or 9050)
+NONCE_TTL = 180.0
+
+b64e = lambda b: base64.b64encode(b).decode("ascii")
+b64d = lambda s: base64.b64decode(s)
+
+
+# ---------------------------------------------------------------- state ---
+def dirs():
+    for d in (STATE, INBOX, ARCHIVE):
+        os.makedirs(d, exist_ok=True)
+
+
+def keys(create=False):
+    """Load the identity. Returns None if absent and create is False.
+
+    Minting is opt-in on purpose. A read-only command that creates an identity
+    is a footgun: it writes a new key, and anything that then signs with it is
+    silently using the wrong identity, which the peer rejects in a way that
+    looks like a network fault.
+    """
+    dirs()
+    if os.path.exists(IDFILE):
+        with open(IDFILE) as f:
+            return AgentKeys.from_secret_dict(json.load(f))
+    if not create:
+        return None
+    k = AgentKeys.generate()
+    fd = os.open(IDFILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump(k.to_secret_dict(), f)
+    return k
+
+
+def need_keys():
+    k = keys()
+    if k is None:
+        print(f"no identity at {IDFILE}", file=sys.stderr)
+        print("  create one with:  inbox_agent.py init", file=sys.stderr)
+        print("  (the installer does this for you; whoami never writes)",
+              file=sys.stderr)
+        raise SystemExit(2)
+    return k
+
+
+# Retry-on-failure keeps the peers we already have. That is right for a
+# TRANSIENT fault, and wrong for a DELIBERATE one: if an operator revokes a
+# compromised peer by rewriting peers.json and the result is unreadable or
+# invalid, keeping stale peers would leave the revoked key allowlisted. So the
+# two failure classes are treated differently:
+#
+#   absent      -> {}           nothing configured yet
+#   unreadable  -> KEEP + retry I/O error: permissions, fd limit, unsynced file
+#   corrupt     -> FAIL CLOSED  readable but not a valid allowlist: do not trust it
+#
+# save_peers() writes tmp+os.replace, so our own writes can never truncate the
+# file; "corrupt" means someone edited it by hand or the disk lost a block.
+PEERS_ABSENT = "absent"
+PEERS_OK = "ok"
+PEERS_UNREADABLE = "unreadable"
+PEERS_CORRUPT = "corrupt"
+
+
+def peers_state():
+    """(status, mapping) — see the table above. Never raises."""
+    if not os.path.exists(PEERS):
+        return PEERS_ABSENT, {}
+    try:
+        with open(PEERS) as f:
+            raw = f.read()
+    except OSError:
+        return PEERS_UNREADABLE, None
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return PEERS_CORRUPT, None
+    if not isinstance(data, dict):
+        return PEERS_CORRUPT, None
+    return PEERS_OK, data
+
+
+def peers():
+    """Just the mapping; {} when absent or unusable. For read-only commands."""
+    return peers_state()[1] or {}
+
+
+def save_peers(p):
+    dirs()
+    tmp = PEERS + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(p, f, indent=2, sort_keys=True)
+    os.replace(tmp, PEERS)
+
+
+def _self_fingerprint():
+    """Short sha256 of the file that is actually executing.
+
+    The box once ran a daemon no user ran, which is exactly how two shipped bugs
+    stayed invisible. This makes "which code is live" answerable from the log.
+    """
+    try:
+        with open(os.path.abspath(__file__), "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()[:12]
+    except OSError:
+        return "unknown"
+
+
+def onion():
+    """Resolve our onion address without ever talking to tor.
+
+    Two layouts exist:
+      - static HiddenServiceDir (every install this script makes): tor writes
+        $HOME/hs/hostname, which wins.
+      - ADD_ONION (a daemon that registers through the control port): tor keeps
+        no hostname file, so that daemon records the address it got in
+        $STATE/onion.txt.
+
+    This must stay read-only and work with tor stopped: during a cutover this
+    is the evidence an operator reads, and "onion (not configured)" on a
+    healthy migration would invite a false rollback.
+    """
+    for path in (HOSTNAME_FILE, os.path.join(STATE, "onion.txt")):
+        try:
+            with open(path) as f:
+                val = f.read().strip()
+            if val:
+                return val
+        except OSError:
+            continue
+    return None
+
+
+# --------------------------------------------------------------- framing --
+def send_msg(sock, obj):
+    data = json.dumps(obj).encode()
+    sock.sendall(len(data).to_bytes(4, "big") + data)
+
+
+MAX_FRAME = 16 * 1024 * 1024  # same ceiling toragents uses; stops a hostile header
+
+
+def recv_msg(sock):
+    hdr = _read_exact(sock, 4)
+    if hdr is None:
+        return None
+    n = int.from_bytes(hdr, "big")
+    if n > MAX_FRAME:
+        raise ValueError(f"declared frame {n} exceeds {MAX_FRAME}")
+    body = _read_exact(sock, n)
+    if body is None:
+        return None
+    return json.loads(body.decode())
+
+
+def _read_exact(sock, n):
+    buf = b""
+    while len(buf) < n:
+        chunk = sock.recv(n - len(buf))
+        if not chunk:
+            return None
+        buf += chunk
+    return buf
+
+
+# ---------------------------------------------------------------- nonces --
+class Nonces:
+    def __init__(self):
+        self._d, self._lock = {}, threading.Lock()
+
+    def issue(self):
+        n = secrets.token_bytes(32)
+        with self._lock:
+            now = time.time()
+            self._d = {k: v for k, v in self._d.items() if v > now}
+            self._d[b64e(n)] = now + NONCE_TTL
+        return n
+
+    def consume(self, token):
+        with self._lock:
+            exp = self._d.pop(token, None)
+        if exp is None or exp < time.time():
+            return None
+        try:
+            return b64d(token)
+        except Exception:
+            return None
+
+
+# ---------------------------------------------------------------- server --
+class Inbox:
+    def __init__(self):
+        self.k = keys(create=True)   # a daemon coming up is allowed to mint
+        self.nonces = Nonces()
+        status, loaded = peers_state()
+        self.peers = loaded if loaded is not None else {}
+        self._peers_warned = None
+        self.lock = threading.Lock()
+        self.accepted = self.rejected = 0
+        self.addr = onion()
+        self._peers_mtime = self._mtime()
+
+    def _mtime(self):
+        try:
+            return os.path.getmtime(PEERS)
+        except OSError:
+            return None
+
+    def _reload_peers_if_changed(self):
+        """Pick up `add-peer` without restarting the daemon.
+
+        On an unreadable file this KEEPS the peers already loaded and does not
+        advance the stamp, so the read is retried on the next message instead of
+        pinning an empty allowlist until the file next changes.
+        """
+        now = self._mtime()
+        if now == self._peers_mtime:
+            return
+        status, loaded = peers_state()
+        if status == PEERS_UNREADABLE:
+            if now != self._peers_warned:
+                print(f"[inbox] peers.json unreadable; keeping "
+                      f"{len(self.peers)} allowed peer(s), will retry", flush=True)
+                self._peers_warned = now
+            return
+        if status == PEERS_CORRUPT:
+            # Readable but invalid: fail closed rather than trust stale peers,
+            # because this is also what a botched revocation looks like.
+            self.peers = {}
+            self._peers_mtime = now
+            self._peers_warned = None
+            print(f"[inbox] peers.json is CORRUPT; failing closed with 0 allowed "
+                  f"peer(s) until it is fixed: {PEERS}", flush=True)
+            return
+        # No lock here on purpose: the caller already holds self.lock and
+        # threading.Lock is not reentrant. Assigning the dict reference is
+        # atomic, and a reader that grabbed the old dict iterates a stable
+        # snapshot, so a swap mid-read is safe.
+        self.peers = loaded
+        self._peers_mtime = now
+        self._peers_warned = None
+        print(f"[inbox] peer list reloaded ({len(self.peers)} allowed)", flush=True)
+
+    def handle(self, req):
+        op = req.get("op")
+        if op == "ping":
+            return {"ok": True, "service": "toragents-inbox", "onion": self.addr,
+                    "fingerprint": self.k.public().fingerprint}
+        if op == "hello":
+            return {"ok": True, "nonce": b64e(self.nonces.issue())}
+        if op == "send":
+            return self._accept(req)
+        return {"ok": False, "error": f"unknown op {op!r}"}
+
+    def _accept(self, req):
+        token, body, pub, sig = (req.get("nonce"), req.get("body"),
+                                 req.get("pubkey"), req.get("sig"))
+        if not all([token, isinstance(body, str), pub, sig]):
+            self.rejected += 1
+            return {"ok": False, "error": "malformed send"}
+
+        nonce = self.nonces.consume(token)
+        if nonce is None:
+            self.rejected += 1
+            return {"ok": False, "error": "stale or unknown nonce"}
+
+        try:
+            sender = PublicIdentity.from_dict(pub)
+            signature = b64d(sig)
+        except Exception:
+            self.rejected += 1
+            return {"ok": False, "error": "bad pubkey or signature encoding"}
+
+        if not sender.verify(nonce + body.encode("utf-8"), signature):
+            self.rejected += 1
+            return {"ok": False, "error": "signature does not verify"}
+
+        fp = sender.fingerprint
+        self._reload_peers_if_changed()
+        with self.lock:
+            peer = self.peers.get(fp)
+        if peer is None:
+            self.rejected += 1
+            return {"ok": False, "error": "sender not on allowlist",
+                    "fingerprint": fp}
+
+        mid = uuid.uuid4().hex[:12]
+        rec = {"id": mid, "received": time.time(), "from_fingerprint": fp,
+               "from_label": peer.get("label", ""), "from_onion": peer.get("onion", ""),
+               "body": body}
+        for f in ("from_session", "to_session"):
+            v = req.get(f)
+            if isinstance(v, str) and v.strip():
+                rec[f] = v.strip()[:64]
+        path = os.path.join(INBOX, f"{time.time():.0f}-{mid}.json")
+        with open(path + ".tmp", "w") as f:
+            json.dump(rec, f, indent=2)
+        os.replace(path + ".tmp", path)
+        self.accepted += 1
+        print(f"[inbox] +{mid} from {peer.get('label') or fp[:12]}", flush=True)
+        return {"ok": True, "id": mid}
+
+
+def client_loop(conn, box):
+    try:
+        while True:
+            req = recv_msg(conn)
+            if req is None:
+                break
+            try:
+                reply = box.handle(req)
+            except Exception as exc:
+                reply = {"ok": False, "error": f"handler: {exc}"}
+            send_msg(conn, reply)
+    except Exception:
+        pass
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def serve():
+    box = Inbox()
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind(("127.0.0.1", LISTEN_PORT))
+    srv.listen(16)
+    print(f"listening 127.0.0.1:{LISTEN_PORT}", flush=True)
+    print(f"onion      {box.addr or '(hidden service not configured yet)'}", flush=True)
+    print(f"fingerprint {box.k.public().fingerprint}", flush=True)
+    print(f"peers      {len(box.peers)}", flush=True)
+    try:
+        while True:
+            conn, _ = srv.accept()
+            threading.Thread(target=client_loop, args=(conn, box), daemon=True).start()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        srv.close()
+
+
+# ---------------------------------------------------------------- client --
+# Escalating ladder: fetching a COLD descriptor (a peer whose tor has only just
+# published, i.e. every brand-new user's first message) routinely takes longer
+# than a single short timeout. A flat 4x30s budget produced a spurious
+# ConnectionError on first contact, then succeeded instantly on retry.
+DIAL_LADDER = [int(x) for x in
+               os.environ.get("TORAGENTS_DIAL_LADDER", "30,60,120,180").split(",")]
+
+
+def dial(target_onion, timeout=None):
+    """Plain SOCKS5 dial through the local tor. No tor API, just socks."""
+    import socks
+    host = target_onion[:-6] if target_onion.endswith(".onion") else target_onion
+    last = None
+    for i, budget in enumerate(DIAL_LADDER):
+        s = socks.socksocket()
+        s.set_proxy(socks.SOCKS5, "127.0.0.1", SOCKS_PORT, rdns=True)
+        s.settimeout(budget)
+        if i:
+            print(f"  retry {i}/{len(DIAL_LADDER) - 1} "
+                  f"(waiting up to {budget}s for the descriptor)",
+                  file=sys.stderr)
+        try:
+            s.connect((host + ".onion", 80))
+            return s
+        except Exception as exc:
+            last = exc
+            try:
+                s.close()
+            except Exception:
+                pass
+    raise ConnectionError(
+        f"cannot reach {target_onion[:16]}... after {len(DIAL_LADDER)} attempts: {last}\n"
+        f"  MEASURED: a peer whose tor has just restarted takes about THREE MINUTES\n"
+        f"  to republish its descriptor (182 s measured on this project). Every\n"
+        f"  reinstall on either side restarts tor, so a fresh install is followed by\n"
+        f"  three minutes in which that peer is unreachable and looks dead. Wait, do\n"
+        f"  not reinstall again to 'fix' it -- that restarts the clock.\n"
+        f"  Check the peer is running and tor is up on 127.0.0.1:{SOCKS_PORT}.")
+
+
+def cmd_reach(a):
+    """Is the peer actually reachable, right now, through OUR tor?
+
+    This exists because two separate mistakes produced a false "the peer is
+    down" in one session:
+
+      1. dialling the peer's LOCAL port. The onion exposes ONE virtual port (80)
+         which their tor forwards to their listener; their local port number is
+         invisible from here and dialling it is refused.
+      2. dialling through the wrong tor. If the state config has no socks_port
+         the CLI falls back to 9050 -- the machine's default tor, which may not
+         be the instance that carries these circuits -- and descriptor fetches
+         stall there while the dedicated instance answers in seconds.
+
+    So: dial port 80, report WHICH socks port did it, and time it.
+    """
+    import time
+    p = peers()
+    target = None
+    for fp, v in p.items():
+        if not a.to or a.to in (fp, v.get("label"), fp[:12]):
+            target = v
+            break
+    if target is None:
+        sys.exit(f"unknown peer {a.to!r}; try: inbox_agent.py peers")
+    label = target.get("label") or target["onion"][:16]
+    print(f"peer      {label}")
+    print(f"onion     {target['onion']}")
+    print(f"dialling  {target['onion'][:16]}...:80   via socks 127.0.0.1:{SOCKS_PORT}")
+    t0 = time.time()
+    try:
+        s = dial(target["onion"], )
+    except ConnectionError as exc:
+        print(f"\n  UNREACHABLE after {time.time() - t0:.1f}s")
+        print(f"  {exc}")
+        if SOCKS_PORT == 9050:
+            print("  note: this used tor's default SOCKS port. If this machine runs a")
+            print("        dedicated tor for toragents, set socks_port in")
+            print("        <state>/config.json or TORAGENTS_SOCKS, and retry.")
+        sys.exit(2)
+    dt = time.time() - t0
+    try:
+        s.close()
+    except Exception:
+        pass
+    print(f"\n  REACHABLE in {dt:.1f}s -- their tor published, their listener accepted")
+
+
+def auto_session() -> str:
+    """Who is speaking, without asking anyone to configure anything.
+
+    pi exports PI_SESSION_ID to everything it spawns, and that id is stable per
+    conversation and survives --resume. So a short prefix is a name that
+    identifies the session to the other machine for its whole life: no setup, no
+    env var to remember, and two sessions on one box stop looking like one.
+    """
+    explicit = (os.environ.get("TORAGENTS_SESSION") or "").strip()
+    if explicit:
+        return explicit[:64]
+    for var, prefix in (("PI_SESSION_ID", "pi"),):
+        v = (os.environ.get(var) or "").strip()
+        if v:
+            return f"{prefix}-{v.replace('-', '')[:8]}"
+    # No id in the environment: something other than pi is calling. There is
+    # nothing left to guess from -- the hook that used to leave a note here is
+    # gone with the other harnesses. Callers pass --session or set
+    # TORAGENTS_SESSION; an empty name is honest and the header shows the peer.
+    return ""
+
+
+def send_to(target_onion, body, k=None, session=None, to_session=None):
+    k = k or need_keys()             # never sign with a freshly minted key
+    sock = dial(target_onion)
+    try:
+        send_msg(sock, {"op": "hello"})
+        hello = recv_msg(sock)
+        if not hello or not hello.get("ok"):
+            raise RuntimeError(f"hello refused: {hello}")
+        nonce = b64d(hello["nonce"])
+        payload = {"op": "send", "nonce": hello["nonce"], "body": body,
+                   "pubkey": k.public().to_dict(),
+                   "sig": b64e(k.sign(nonce + body.encode("utf-8")))}
+        # Session names are ADVISORY labels, deliberately outside the signature:
+        # the peer is authenticated by key, and which of that peer's live
+        # sessions is talking is not something the signature can bind anyway.
+        # Old receivers ignore these fields, so this stays compatible.
+        if session:
+            payload["from_session"] = session
+        if to_session:
+            payload["to_session"] = to_session
+        send_msg(sock, payload)
+        return recv_msg(sock)
+    finally:
+        try:
+            sock.close()
+        except Exception:
+            pass
+
+
+# ------------------------------------------------------------------- cli --
+
+def cmd_doctor(a):
+    """Answer "is the receiving half wired up on THIS machine?" -- measured.
+
+    pi has one receiving path, the extension, so there is exactly one question:
+    is the extension installed in the directory THIS pi reads, and is it keeping
+    up with the inbox? No harness config to parse and no hook that can fail
+    silently, which is the whole reason this project is pi-only.
+    """
+    home = os.path.expanduser("~")
+    state = STATE
+    inbox = os.path.join(state, "inbox")
+
+    def count(d):
+        try:
+            return len([n for n in os.listdir(d) if n.endswith(".json")])
+        except OSError:
+            return -1
+
+    print(f"  state        {state}")
+    n_inbox = count(inbox)
+    print(f"  inbox        {'no directory yet (nothing has arrived)' if n_inbox < 0 else str(n_inbox) + ' file(s) waiting'}")
+    try:
+        import json as _j
+        announced = _j.load(open(os.path.join(state, "announced.json")))
+        announced = announced if isinstance(announced, list) else list(announced)
+    except Exception:
+        announced = []
+    print(f"  announced    {len(announced)} already delivered")
+    for name in ("onion.txt", "config.json", "peers.json"):
+        fp = os.path.join(state, name)
+        print(f"  {name:12} {'present' if os.path.exists(fp) else 'MISSING'}")
+
+    # The only thing that turns a file into a message the agent can see.
+    print("\n  pi extension")
+    ext = os.path.join(home, ".pi", "agent", "extensions", "toragents-inbox.ts")
+    if os.path.exists(ext):
+        size = os.path.getsize(ext)
+        print(f"  installed    {ext} ({size} bytes)")
+    else:
+        print(f"  MISSING      {ext}")
+        print("               messages will pile up and never reach the session.")
+        print("               Re-run the installer, or copy toragents_watch.ts there.")
+    print(f"  pi dir       {'present' if os.path.isdir(os.path.join(home, '.pi')) else 'MISSING'}")
+
+    # Who took the mail. pi can run several sessions on one box and untargeted
+    # mail is first-come, so without this "nothing arrived" and "the other
+    # window took it" are the same observation.
+    try:
+        import json as _j
+        rec = _j.load(open(os.path.join(state, "delivered_by.json"), encoding="utf-8"))
+        recent = sorted(rec.items(), key=lambda kv: kv[1].get("at", ""), reverse=True)[:5]
+        if recent:
+            print("\n  recently delivered by")
+            for mid, meta in recent:
+                print(f"  {mid:14} {meta.get('at','?')}  by {meta.get('by','?')}")
+    except (OSError, ValueError):
+        pass
+
+    # What is sitting there, and whether the extension has already announced it.
+    print("\n  waiting")
+    try:
+        names = sorted((n for n in os.listdir(inbox) if n.endswith(".json")), reverse=True)
+    except OSError:
+        names = []
+    if not names:
+        print("  none")
+        return 0
+    for n in names[:8]:
+        try:
+            import json as _j
+            m = _j.load(open(os.path.join(inbox, n), encoding="utf-8"))
+        except Exception:
+            print(f"  {n}  unreadable")
+            continue
+        mid = str(m.get("id") or "?")
+        state_word = "delivered" if mid in announced else "PENDING"
+        print(f"  {mid:14} {state_word:9} to={m.get('to_session') or '-':18} "
+              f"from={m.get('from_label') or m.get('from') or '?'}")
+    return 0
+
+
+def cmd_serve(a):
+    print(f"[inbox] running inbox_agent.py sha256={_self_fingerprint()} "
+          f"state={STATE}", flush=True)
+    serve()
+
+
+def cmd_init(a):
+    existed = os.path.exists(IDFILE)
+    k = keys(create=True)
+    print(f"{'existing' if existed else 'created'}  {IDFILE}")
+    print(f"fingerprint  {k.public().fingerprint}")
+    if existed:
+        print("onion        unchanged (identity reused)")
+
+
+def cmd_whoami(a):
+    k = keys()                      # never creates
+    print(f"onion        {onion() or '(not configured)'}")
+    if k is None:
+        print(f"fingerprint  (no identity yet - run: inbox_agent.py init)")
+        raise SystemExit(2)
+    print(f"fingerprint  {k.public().fingerprint}")
+
+
+def _writable_peers():
+    """Allowlist for a read-modify-write. Refuses to start from a bad file.
+
+    Rewriting a file you could not read is how one broken allowlist becomes one
+    peer and a silent revocation of everyone else.
+    """
+    status, p = peers_state()
+    if status in (PEERS_UNREADABLE, PEERS_CORRUPT):
+        sys.exit(f"refusing to modify {PEERS}: it is {status}. "
+                 f"Fix or delete the file first.")
+    return p or {}
+
+
+def cmd_add_peer(a):
+    p = _writable_peers()
+    fp = a.fingerprint.strip().lower()
+    if len(fp) != 32:
+        sys.exit(f"fingerprint must be 32 hex chars (got {len(fp)})")
+    if not a.onion.endswith(".onion"):
+        sys.exit("--onion must end in .onion")
+    p[fp] = {"onion": a.onion.strip(), "label": a.label or fp[:12],
+             "added": time.time()}
+    save_peers(p)
+    print(f"allowlisted {p[fp]['label']} ({fp[:12]}...) -> {a.onion}")
+
+
+def cmd_peers(a):
+    p = peers()
+    if not p:
+        print("(no peers allowlisted)")
+    for fp, v in sorted(p.items(), key=lambda kv: kv[1].get("label", "")):
+        print(f"{v.get('label',''):18} {fp[:16]}...  {v['onion']}")
+
+
+def _msgs(include_archived=False):
+    out = []
+    for d, arch in ((INBOX, False), (ARCHIVE, True)):
+        if not os.path.isdir(d):
+            continue
+        if arch and not include_archived:
+            continue
+        for n in sorted(os.listdir(d)):
+            if n.endswith(".json"):
+                try:
+                    with open(os.path.join(d, n)) as f:
+                        m = json.load(f)
+                    m["_archived"] = arch
+                    out.append(m)
+                except Exception:
+                    pass
+    return sorted(out, key=lambda m: m.get("received", 0))
+
+
+def cmd_inbox(a):
+    ms = _msgs(a.all)
+    if not ms:
+        print("(inbox empty)")
+    for m in ms:
+        when = time.strftime("%Y-%m-%d %H:%M", time.localtime(m.get("received", 0)))
+        who = m.get("from_label", "?")
+        if m.get("from_session"):
+            who = f"{who}/{m['from_session']}"
+        if m.get("to_session"):
+            who = f"{who} -> {m['to_session']}"
+        print(f"{m['id']}  {when}  {who[:30]:30} "
+              f"{(m.get('body') or '').replace(chr(10),' ')[:60]}")
+
+
+def cmd_read(a):
+    for m in _msgs(True):
+        if m["id"] == a.id:
+            print(json.dumps(m, indent=2))
+            return
+    sys.exit(f"no message {a.id}")
+
+
+def cmd_ack(a):
+    for n in (os.listdir(INBOX) if os.path.isdir(INBOX) else []):
+        if a.id in n:
+            os.replace(os.path.join(INBOX, n), os.path.join(ARCHIVE, n))
+            print(f"archived {a.id}")
+            return
+    sys.exit(f"no unarchived message {a.id}")
+
+
+def _read_body(a):
+    """Body from a file is taken verbatim; body from argv is not trustworthy.
+
+    A double-quoted argument is expanded by the sending shell, so prose that
+    mentions a substitution loses it before this process runs -- measured on the
+    other side of this wire five times, in sentences describing that very
+    mechanism. Reading the file means the bytes on the wire are the bytes in the
+    file, which is also the only way a send-side fingerprint can mean anything.
+    """
+    path = getattr(a, "body_file", None)
+    if not path:
+        if a.body is None:
+            sys.exit("send: give --body or --body-file")
+        return a.body
+    if a.body is not None:
+        sys.exit("send: --body and --body-file are mutually exclusive")
+    try:
+        if path in ("-", "/dev/stdin"):
+            data = sys.stdin.buffer.read()
+        else:
+            with open(path, "rb") as f:
+                data = f.read()
+    except OSError as e:
+        sys.exit(f"send: cannot read --body-file {path}: {e.strerror}")
+    try:
+        # A BOM is an encoding marker, not content: Windows editors and
+        # `Set-Content -Encoding utf8` add one, and it would otherwise arrive as
+        # the first character of the message.
+        return data.decode("utf-8-sig")
+    except UnicodeDecodeError as e:
+        sys.exit(f"send: --body-file is not valid UTF-8: {e}")
+
+
+def cmd_send(a):
+    a.body = _read_body(a)
+    p = peers()
+    target = None
+    for fp, v in p.items():
+        if a.to in (fp, v.get("label"), fp[:12]):
+            target = v
+            break
+    if target is None:
+        sys.exit(f"unknown peer {a.to!r}; try: inbox_agent.py peers")
+    reply = send_to(target["onion"], a.body,
+                    session=getattr(a, "session", None) or auto_session() or None,
+                    to_session=getattr(a, "to_session", "") or None)
+    print(json.dumps(reply, indent=2))
+    sys.exit(0 if reply and reply.get("ok") else 1)
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    s = ap.add_subparsers(dest="cmd", required=True)
+    s.add_parser("serve").set_defaults(fn=cmd_serve)
+    s.add_parser("whoami").set_defaults(fn=cmd_whoami)
+    s.add_parser("doctor").set_defaults(fn=cmd_doctor)
+    s.add_parser("init").set_defaults(fn=cmd_init)
+    s.add_parser("peers").set_defaults(fn=cmd_peers)
+    p = s.add_parser("add-peer")
+    p.add_argument("fingerprint")
+    p.add_argument("--onion", required=True)
+    p.add_argument("--label", default="")
+    p.set_defaults(fn=cmd_add_peer)
+    p = s.add_parser("inbox")
+    p.add_argument("--all", action="store_true")
+    p.set_defaults(fn=cmd_inbox)
+    p = s.add_parser("read")
+    p.add_argument("id")
+    p.set_defaults(fn=cmd_read)
+    p = s.add_parser("ack")
+    p.add_argument("id")
+    p.set_defaults(fn=cmd_ack)
+    p = s.add_parser("reach")
+    p.add_argument("--to", default="")
+    p.set_defaults(fn=cmd_reach)
+    p = s.add_parser("send")
+    p.add_argument("--to", required=True)
+    p.add_argument("--body", default=None,
+                   help="message text. Prefer --body-file for prose: a body on "
+                        "the command line is shell-expanded before we ever see it, "
+                        "so a literal $(cat file) in the text is executed and "
+                        "replaced by nothing, and trailing blank lines are stripped")
+    p.add_argument("--body-file", default=None, metavar="PATH",
+                   help="read the body from PATH as UTF-8, byte for byte (use - for stdin)")
+    p.add_argument("--session", default=None,
+                   help="name of THIS session; auto-derived from the harness if omitted")
+    p.add_argument("--to-session", default="", help="only deliver to this session name")
+    p.set_defaults(fn=cmd_send)
+    a = ap.parse_args()
+    a.fn(a)
+
+
+if __name__ == "__main__":
+    main()
