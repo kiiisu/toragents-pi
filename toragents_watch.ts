@@ -226,16 +226,11 @@ const POLL_MS = Number(process.env.TORAGENTS_POLL_MS || 3000);
 function autoSession(): string {
 	const explicit = (process.env.TORAGENTS_SESSION || "").trim();
 	if (explicit) return explicit.slice(0, 64);
-	const pairs: Array<[string, string]> = [
-		["CLAUDE_CODE_SESSION_ID", "claude"],
-		["PI_SESSION_ID", "pi"],
-		["CODEX_SESSION_ID", "codex"],
-		["CODEX_THREAD_ID", "codex"],
-	];
-	for (const [key, prefix] of pairs) {
-		const id = (process.env[key] || "").trim();
-		if (id) return `${prefix}-${id.replace(/-/g, "").slice(0, 8)}`;
-	}
+	// pi only. There is no other harness to name: this file is loaded by pi, so
+	// PI_SESSION_ID is the only session identity that can exist here. Keeping
+	// other harnesses' variables would be dead branches pretending to be support.
+	const id = (process.env.PI_SESSION_ID || "").trim();
+	if (id) return `pi-${id.replace(/-/g, "").slice(0, 8)}`;
 	return "";
 }
 
