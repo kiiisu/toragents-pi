@@ -470,10 +470,33 @@ UNIT
       *"$HOME_DIR"*) ;;
       *) TOR_UNIT_HOME="" ;;
     esac
-    if [ -z "$TOR_UNIT_HOME" ] || ! systemctl --user is-active --quiet toragents-tor.service 2>/dev/null; then
+    if [ -n "$TOR_UNIT_HOME" ] && systemctl --user is-active --quiet toragents-tor.service 2>/dev/null; then
+      # Tor is already serving THIS install. A restart would unpublish the onion
+      # for ~3 minutes (182 s measured) while everything else looks fine, so an
+      # update must never touch it: rewriting payload files does not need a new
+      # tor, and the daemon restarts in well under a second.
+      ok "tor already serving this install -- left running (onion stays published)"
+      systemctl --user restart toragents-inbox.service 2>/dev/null || true
+      TOR_WAS_RUNNING=1
+      AUTOSTARTED=1
+    elif [ -z "$TOR_UNIT_HOME" ] || ! systemctl --user is-active --quiet toragents-tor.service 2>/dev/null; then
       warn "no user systemd session -- starting tor and the daemon directly"
+      # A tor already running on THIS torrc is the same onion; starting a second
+      # one would fail to lock DataDirectory, and killing the old one would cost
+      # the 3-minute republish. Leave it alone.
+      RUNNING_TOR=""
+      for p in $(ss -ltnp 2>/dev/null | grep -o 'pid=[0-9]*' | cut -d= -f2 | sort -u); do
+        case "$(tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null)" in
+          *"-f $HOME_DIR/torrc"*) RUNNING_TOR="$p"; break ;;
+        esac
+      done
+      if [ -n "$RUNNING_TOR" ]; then
+        ok "tor pid $RUNNING_TOR already serving $HOME_DIR/torrc -- left running"
+        TOR_WAS_RUNNING=1
+      else
       nohup "$TORBIN" -f "$HOME_DIR/torrc" > "$HOME_DIR/tor.log" 2>&1 &
       sleep 2
+      fi
       nohup env TORAGENTS_HOME="$HOME_DIR" TORAGENTS_PORT="$PORT" TORAGENTS_SOCKS="$SOCKS" \
         "$VPY" "$HOME_DIR/inbox_agent.py" serve > "$HOME_DIR/inbox.log" 2>&1 &
       AUTOSTARTED=0
@@ -539,6 +562,28 @@ while [ ! -s "$HOME_DIR/hs/hostname" ]; do
   sleep 1
 done
 ONION="$(cat "$HOME_DIR/hs/hostname")"
+
+# The hostname file proves a KEY EXISTS, not that the network can reach us: it is
+# written before tor uploads a descriptor, and a restarted tor takes ~3 minutes
+# (182 s measured) to be reachable again. Saying INSTALLED on the strength of the
+# file is how a machine ends up looking installed while every dial to it fails.
+if [ "$DRY" = 0 ] && command -v curl >/dev/null 2>&1; then
+  i=0; CODE=000
+  while [ "$i" -lt 45 ]; do
+    CODE="$(curl -s -o /dev/null -m 8 -w '%{http_code}' --socks5-hostname 127.0.0.1:"$SOCKS" "http://$(cat "$HOME_DIR/hs/hostname")/" 2>/dev/null || echo 000)"
+    [ "$CODE" != "000" ] && break
+    i=$((i+3)); sleep 3
+  done
+  if [ "$CODE" != "000" ]; then
+    ok "onion answers on its own socks port (http $CODE after ${i}s)"
+  elif [ "${TOR_WAS_RUNNING:-0}" = 1 ]; then
+    warn "tor was already running but the onion did not answer in ${i}s"
+    warn "this is not a fresh-publish wait: check $HOME_DIR/tor.log, do NOT reinstall"
+  else
+    warn "onion not yet reachable after ${i}s (normal on a first publish: up to 3 min)"
+    warn "it will come up on its own; reinstalling restarts the clock, so wait"
+  fi
+fi
 # init explicitly: whoami is read-only now and must never mint an identity
 TORAGENTS_HOME="$HOME_DIR" "$VPY" "$HOME_DIR/inbox_agent.py" init >/dev/null
 FP="$(TORAGENTS_HOME="$HOME_DIR" "$VPY" "$HOME_DIR/inbox_agent.py" whoami | awk '/fingerprint/{print $2}')"
