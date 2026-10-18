@@ -54,13 +54,13 @@ The runbook tells the agent to stop there and say exactly what to ask for.
 Plain Linux / macOS:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/rx3asarc/toragents-pi/806fe572547c7cf7e9e6b43789c96ec22f6bccc6/setup.sh | bash
+curl -fsSL https://raw.githubusercontent.com/rx3asarc/toragents-pi/8a54d5ed93210ae1de941cd0061b6e86af9ed423/setup.sh | bash
 ```
 
 Windows (PowerShell):
 
 ```powershell
-irm https://raw.githubusercontent.com/rx3asarc/toragents-pi/806fe572547c7cf7e9e6b43789c96ec22f6bccc6/setup.ps1 | iex
+irm https://raw.githubusercontent.com/rx3asarc/toragents-pi/8a54d5ed93210ae1de941cd0061b6e86af9ed423/setup.ps1 | iex
 ```
 
 Those URLs are pinned to commit `806fe572547c` rather than `main`, so the script
