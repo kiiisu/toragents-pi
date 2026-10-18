@@ -219,6 +219,8 @@ bun tools/test_race.ts       # 3 checks: two sessions, one inbox, exactly once
 bun tools/test_firstrun.ts   # first install must not swallow new mail
 bun tools/test_failure.ts    # a failed delivery must not look delivered
 bun tools/test_orphan.ts     # a crash mid-delivery must not strand a message
+bun tools/test_batch.ts      # a flood marks only what it rendered
+bun tools/test_stuck.ts      # an unwritable state dir must not loop forever
 ```
 
 The race test is the one worth understanding: with the claim disabled it
@@ -231,6 +233,14 @@ recorded in `state/failed/<id>` with the error. `/toragents-status` lists it,
 alternative — keeping it marked delivered — gives the sender a receipt for a
 message no model ever saw, which is the one failure this channel must never
 report as success.
+
+**A flood is throttled by not marking the rest.** Each turn claims and announces
+only the messages it actually renders (five), so the remainder stays unclaimed
+and arrives on the next tick, three seconds later. Marking them all while
+showing five used to leave the extras "delivered" to nobody — claimed and
+announced agreed, so `doctor` reported them delivered and no session ever
+injected them. If the peer sends eight while your machine is closed, you get two
+turns nine seconds apart and nothing is lost.
 
 **A crash between claiming and delivering self-heals.** Claims older than five
 minutes with no matching announcement are released at session start, so a

@@ -138,15 +138,20 @@ function failedIds(): Set<string> {
 	}
 }
 
-function markFailed(id: string, error: string, from: string): void {
+function markFailed(id: string, error: string, from: string): boolean {
+	// Returns false when the marker could not be written. The caller must then
+	// keep the id out of the retry path some other way: unclaiming it while the
+	// marker fails would re-claim it every tick, fail three times, warn again,
+	// and loop forever on a disk that will not take the write.
 	try {
 		mkdirSync(FAILED_DIR, { recursive: true });
 		writeFileSync(
 			join(FAILED_DIR, id),
 			JSON.stringify({ at: Date.now(), error: error.slice(0, 300), from, session: sessionLabel() }),
 		);
+		return true;
 	} catch {
-		/* if even this fails, the unclaim below still returns it to PENDING */
+		return false;
 	}
 }
 const LOCK = join(STATE, "announced.lock");
@@ -422,18 +427,25 @@ export default function (pi: ExtensionAPI) {
 	let timer: ReturnType<typeof setInterval> | null = null;
 	let announced: Set<string> = new Set();
 	const attempts = new Map<string, number>();
+	// Ids whose failure marker could not be written. Kept out of the retry path
+	// for the life of the session: the alternative is a warning every three
+	// seconds, forever.
+	const stuck = new Set<string>();
 	let running = false;
 	let seedNotice = "";
 
-	const deliver = async (ctx: ExtensionContext, msgs: RemoteMessage[]) => {
-		const shown = msgs.slice(0, MAX_BATCH);
-		let text = shown.map(render).join("\n\n― ― ―\n\n");
-		if (msgs.length > shown.length) {
-			const rest = msgs.slice(shown.length);
+	const deliver = async (
+		ctx: ExtensionContext,
+		msgs: RemoteMessage[],
+		heldBack = 0,
+	) => {
+		let text = msgs.map(render).join("\n\n― ― ―\n\n");
+		if (heldBack > 0) {
+			// True statement, unlike the old one: these are NOT claimed, NOT
+			// announced, and arrive on the next tick.
 			text +=
-				`\n\n― ― ―\n\n${rest.length} more message(s) waiting, newest from ` +
-				`${rest[rest.length - 1].from_label || "peer"}. ` +
-				`Run: inbox_agent.py inbox`;
+				`\n\n― ― ―\n\n${heldBack} more message(s) waiting; ` +
+				`they arrive in a following turn.`;
 		}
 		try {
 			// followUp when busy: never interrupt a turn or wedge the session
@@ -453,13 +465,22 @@ export default function (pi: ExtensionAPI) {
 				const n = (attempts.get(m.id) || 0) + 1;
 				if (n >= 3) {
 					attempts.delete(m.id);
-					unclaim(m.id);
-					forget(announced, m.id);
-					markFailed(m.id, why, m.from_label || m.from_fingerprint || "peer");
+					const recorded = markFailed(m.id, why, m.from_label || m.from_fingerprint || "peer");
+					if (recorded) {
+						// safe to release: the marker keeps it out of the retry path
+						unclaim(m.id);
+						forget(announced, m.id);
+					} else {
+						// keep it claimed so it is visibly not-delivered, and stop
+						// retrying it this session rather than looping on a write
+						// that keeps failing
+						stuck.add(m.id);
+					}
 					try {
 						ctx.ui.notify(
 							`toragents: could not deliver ${m.id} after 3 tries (${why}). ` +
-								`It is NOT delivered; run /toragents-status, then /toragents-retry`,
+								`It is NOT delivered; run /toragents-status, then /toragents-retry` +
+								(recorded ? "" : " (could not record the failure: state dir unwritable)"),
 							"warning",
 						);
 					} catch {}
@@ -486,19 +507,34 @@ export default function (pi: ExtensionAPI) {
 				RECEIVE === "targeted"
 					? messages.filter((m) => (m.to_session || "").trim() !== "" && addressedToMe(m))
 					: messages;
-			const failed = failedIds();
+			const failed = new Set([...failedIds(), ...stuck]);
 			const fresh = wanted.filter(
-				(m) => !announced.has(m.id) && !failed.has(m.id) && addressedToMe(m),
+				(m) =>
+					!announced.has(m.id) &&
+					!failed.has(m.id) &&
+					!stuck.has(m.id) &&
+					addressedToMe(m),
 			);
 			// Nothing new. Deliberately no pruning: dropping ids whose files are
 			// gone would re-deliver them if an archive is ever restored.
 			if (fresh.length === 0) return;
-			// Ownership is decided here, not by who writes last.
-			const mine = fresh.filter((m) => claim(m.id));
+			// Claim and mark ONLY what this turn will actually render. Marking the
+			// whole batch while showing MAX_BATCH leaves the remainder claimed and
+			// announced but injected into no session, ever -- doctor calls them
+			// delivered because claimed and announced agree, and the peer has a
+			// receipt. "Peer sent 8 while pi was closed" is the normal case for a
+			// two-person tool, so the leftover must stay visibly undone.
+			//
+			// Ownership is decided here, not by who writes last. The unclaimed
+			// remainder is picked up by the next tick, so a flood still arrives in
+			// bounded turns of MAX_BATCH.
+			const batch = fresh.slice(0, MAX_BATCH);
+			const mine = batch.filter((m) => claim(m.id));
 			if (mine.length === 0) return; // another session on this box took them
+			const heldBack = fresh.length - mine.length;
 			for (const m of mine) announced.add(m.id);
 			writeAnnounced(announced);
-			await deliver(ctx, mine);
+			await deliver(ctx, mine, heldBack);
 			writeAnnounced(announced);
 		} finally {
 			running = false;
@@ -627,16 +663,19 @@ export default function (pi: ExtensionAPI) {
 	pi.registerCommand("toragents-retry", {
 		description: "Retry messages that failed to deliver",
 		handler: async (_args, ctx) => {
-			const ids = [...failedIds()];
+			const ids = [...failedIds(), ...stuck];
 			let cleared = 0;
 			for (const id of ids) {
+				stuck.delete(id);
 				try {
 					unlinkSync(join(FAILED_DIR, id));
 					cleared++;
 				} catch {
-					/* already gone */
+					/* no marker to remove: it was never written */
 				}
 			}
+			// Drain now rather than up to POLL_MS later.
+			await poll(ctx);
 			try {
 				ctx.ui.notify(
 					cleared === 0
@@ -652,7 +691,7 @@ export default function (pi: ExtensionAPI) {
 		description: "Show Tor inbox watching state",
 		handler: async (_args, ctx) => {
 			const { messages } = scanInbox();
-			const failed = failedIds();
+			const failed = new Set([...failedIds(), ...stuck]);
 			const unread = messages.filter((m) => !announced.has(m.id) && !failed.has(m.id)).length;
 			const lines = [
 				`watching    ${timer ? "yes" : "no"} every ${POLL_MS}ms`,
