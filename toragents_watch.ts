@@ -44,8 +44,10 @@ import {
 	unlinkSync,
 	writeFileSync,
 } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync } from "node:fs";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 /**
@@ -655,7 +657,76 @@ export default function (pi: ExtensionAPI) {
 		running = false;
 	});
 
+	/**
+	 * Sending is the half a human cannot see. A bash call that prints JSON reads
+	 * like plumbing; a tool call named "Send over Tor", with the peer in it, reads
+	 * like a message leaving -- which is what it is.
+	 */
+	if (typeof (pi as any).registerTool === "function")
+		pi.registerTool({
+			name: "toragents_send",
+			label: "Send over Tor",
+			description:
+				"Send a signed message to a paired peer over Tor. Returns the message id once " +
+				"their daemon accepts it. Use this instead of running the daemon by hand: the " +
+				"human sees the send, and the body is never touched by a shell.",
+			parameters: {
+				type: "object",
+				properties: {
+					to: { type: "string", description: "Peer label, as listed by `inbox peers`" },
+					body: { type: "string", description: "Message text" },
+					to_session: {
+						type: "string",
+						description: "Deliver only to this session name on their side",
+					},
+				},
+				required: ["to", "body"],
+			},
+			async execute(_id: string, params: any) {
+				const root = join(homedir(), ".toragents");
+				const py =
+					process.platform === "win32"
+						? join(root, "venv", "Scripts", "python.exe")
+						: join(root, "venv", "bin", "python");
+				const agent = join(root, "inbox_agent.py");
+				// Body through a file, never argv: no shell involved, but a body that
+				// starts with "-" would still be read as a flag.
+				const dir = mkdtempSync(join(tmpdir(), "toragents-send-"));
+				const bodyFile = join(dir, "body.txt");
+				writeFileSync(bodyFile, String(params.body ?? ""));
+				const args = [agent, "send", "--to", String(params.to), "--body-file", bodyFile];
+				if (params.to_session) args.push("--to-session", String(params.to_session));
+				const res = spawnSync(py, args, {
+					encoding: "utf8",
+					env: { ...process.env, TORAGENTS_HOME: root },
+					timeout: 180_000,
+					});
+				const out = `${res.stdout || ""}${res.stderr || ""}`.trim();
+				if (res.status !== 0) {
+					throw new Error(`send to ${params.to} failed (exit ${res.status}):\n${out.slice(-1500)}`);
+				}
+				let id = "";
+				try {
+					id = JSON.parse(res.stdout).id || "";
+				} catch {
+					/* some daemon errors print prose; the id is best effort */
+				}
+				return {
+					content: [
+						{
+							type: "text" as const,
+							text: id
+								? `sent to ${params.to} — id ${id}`
+								: `send to ${params.to} reported success:\n${out.slice(-600)}`,
+						},
+					],
+					details: { to: params.to, id, ok: true },
+				};
+			},
+	});
+
 	// Manual check that does not wait for the next tick.
+
 	pi.registerCommand("toragents-check", {
 		description: "Check the Tor inbox now and deliver anything new",
 		handler: async (_args, ctx) => {

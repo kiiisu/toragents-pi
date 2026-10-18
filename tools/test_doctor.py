@@ -17,6 +17,7 @@ def run(receive, state, extension_reports=None):
     fresh terminal), and it is the case that made the labels lie.
     """
     env = dict(os.environ, TORAGENTS_HOME=state, TORAGENTS_STATE=os.path.join(state, "state"),
+               HOME=state,   # so the ~/.toragents candidate cannot leak the real install
                PI_SESSION_ID="01a14a4c-aaaa", TORAGENTS_SESSION="pi-01a14a4c")
     if receive:
         env["TORAGENTS_RECEIVE"] = receive
@@ -79,7 +80,7 @@ def run_pi_dir_override():
     override = tempfile.mkdtemp(prefix="toragents-pidir-")
     os.makedirs(os.path.join(override, "extensions"))
     open(os.path.join(override, "extensions", "toragents-inbox.ts"), "w").close()
-    env = dict(os.environ, PI_CODING_AGENT_DIR=override,
+    env = dict(os.environ, PI_CODING_AGENT_DIR=override, HOME=H,
                TORAGENTS_STATE=os.path.join(H, "state"), TORAGENTS_HOME=H)
     return subprocess.run([sys.executable, os.path.join(HERE, "inbox_agent.py"), "doctor"],
                           env=env, capture_output=True, text=True).stdout, override
