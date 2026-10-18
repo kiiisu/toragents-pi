@@ -569,9 +569,12 @@ ONION="$(cat "$HOME_DIR/hs/hostname")"
 # file is how a machine ends up looking installed while every dial to it fails.
 if [ "$DRY" = 0 ] && command -v curl >/dev/null 2>&1; then
   i=0; CODE=000
-  while [ "$i" -lt 45 ]; do
-    CODE="$(curl -s -o /dev/null -m 8 -w '%{http_code}' --socks5-hostname 127.0.0.1:"$SOCKS" "http://$(cat "$HOME_DIR/hs/hostname")/" 2>/dev/null || echo 000)"
-    [ "$CODE" != "000" ] && break
+  while [ "$i" -lt 90 ]; do
+    # curl writes 000 to stdout when it fails, so "|| echo 000" produced 000000
+    # and a `!= 000` test read that as success. Exit status decides, not output.
+    CODE="$(curl -s -o /dev/null -m 8 -w '%{http_code}' --socks5-hostname 127.0.0.1:"$SOCKS" "http://$(cat "$HOME_DIR/hs/hostname")/" 2>/dev/null)" || CODE=000
+    case "$CODE" in 2*|3*|4*) break ;; esac
+    CODE=000
     i=$((i+3)); sleep 3
   done
   if [ "$CODE" != "000" ]; then
