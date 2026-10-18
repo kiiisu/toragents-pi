@@ -166,13 +166,13 @@ You do not need it to proceed; read it when something fails.
 Plain Linux / macOS:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/rx3asarc/toragents-pi/8a54d5ed93210ae1de941cd0061b6e86af9ed423/setup.sh | bash
+curl -fsSL https://raw.githubusercontent.com/rx3asarc/toragents-pi/b5d9650beec0e21c963575631397eef1dc5fb03e/setup.sh | bash
 ```
 
 Windows (PowerShell):
 
 ```powershell
-irm https://raw.githubusercontent.com/rx3asarc/toragents-pi/8a54d5ed93210ae1de941cd0061b6e86af9ed423/setup.ps1 | iex
+irm https://raw.githubusercontent.com/rx3asarc/toragents-pi/b5d9650beec0e21c963575631397eef1dc5fb03e/setup.ps1 | iex
 ```
 
 Those URLs are pinned to commit `806fe572547c` rather than `main`, so the script
