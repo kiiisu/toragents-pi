@@ -29,6 +29,7 @@ try:
     shutil.copy(HERE / "docs" / "lexicon.seed.json", Path(state) / "lexicon.seed.json")
 
     seed = json.loads((HERE / "docs" / "lexicon.seed.json").read_text())
+    rare = [r["text"] for r in seed["names"] + seed["moves"] if r.get("rare")]
     n_names, n_moves = len(seed["names"]), len(seed["moves"])
     rc, out = run(state, "lexicon", "stats")
     check("seeds itself on first use",
@@ -73,6 +74,24 @@ try:
     check("a seeded pool on disk already holds every deck (merge persisted)",
           n_saved > 0 and rc2 == 0 and json.loads(out2)["sizes"]["names"] >= n_saved)
 
+    # A word deleted from a deck must leave existing pools, and a flag added to a
+    # deck must reach them. Both were broken: the merge only ever appended.
+    pool_path = Path(state) / "state" / "lexicon.json"
+    pool = json.loads(pool_path.read_text())
+    pool["names"].append({"id": "n999", "text": "peach", "style": "praise", "used": 0, "last": 0})
+    pool["names"].append({"id": "n998", "text": "hand written word", "style": "custom",
+                          "used": 0, "last": 0})
+    pool_path.write_text(json.dumps(pool))
+    rc, out = run(state, "lexicon", "stats")
+    after = json.loads(pool_path.read_text())
+    check("a word deleted from the decks is pruned from the pool",
+          not any(r["text"] == "peach" for r in after["names"]))
+    check("hand-added custom words are never pruned",
+          any(r["text"] == "hand written word" for r in after["names"]))
+    if rare:
+        check("the rare flag reaches words already in the pool",
+              any(r.get("rare") for r in after["names"] + after["moves"]))
+
     (Path(state) / "state" / "lexicon.json").write_text("{ this is not json")
     rc, out = run(state, "lexicon", "pick", "--count", "2", "--json")
     check("a corrupt pool falls back to the seed instead of crashing",
@@ -93,7 +112,6 @@ try:
 
     # rare words: excluded by default, offerable on request. A mutation that drops
     # the gate makes hunni appear in ordinary rotation, which the first check fails.
-    rare = [r["text"] for r in seed["names"] + seed["moves"] if r.get("rare")]
     if rare:
         seen = set()
         for i in range(25):

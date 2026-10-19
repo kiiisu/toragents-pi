@@ -878,8 +878,34 @@ def _lexicon():
     # Absorb decks added since this pool was created. Keyed by (style, text), not
     # text alone: "good machine" is a praise word AND an earnest one, and matching
     # on text dropped it from whichever deck it did not already belong to.
-    added = 0
+    added = removed = reflagged = 0
     for kind in ("names", "moves"):
+        seed_keys = {((r.get("style") or "custom"), (r.get("text") or "").lower())
+                     for r in seed.get(kind, [])}
+        # A word deleted from a deck must leave the pool, or "get rid of peach"
+        # is advice rather than a change. Hand-added rows (style "custom") are
+        # never pruned: the pool is theirs.
+        kept = []
+        for r in d.get(kind, []):
+            key = ((r.get("style") or "custom"), (r.get("text") or "").lower())
+            if (r.get("style") or "custom") != "custom" and key not in seed_keys:
+                removed += 1
+                continue
+            kept.append(r)
+        d[kind] = kept
+        # Flags are seed-owned too: hunni was added to the pool before it was
+        # marked rare, and a pool that ignores the flag keeps offering it.
+        seed_rare = {((r.get("style") or "custom"), (r.get("text") or "").lower())
+                     for r in seed.get(kind, []) if r.get("rare")}
+        for r in d.get(kind, []):
+            key = ((r.get("style") or "custom"), (r.get("text") or "").lower())
+            should = key in seed_rare
+            if bool(r.get("rare")) != should:
+                if should:
+                    r["rare"] = True
+                else:
+                    r.pop("rare", None)
+                reflagged += 1
         have = {((r.get("style") or "custom"), (r.get("text") or "").lower())
                 for r in d.get(kind, [])}
         for r in seed.get(kind, []):
@@ -894,7 +920,7 @@ def _lexicon():
         for r in d.get(kind, []):
             if not r.get("style") or r["style"] == "custom":
                 r["style"] = index.get((r.get("text") or "").lower(), "custom")
-    if added:
+    if added or removed or reflagged:
         _lexicon_save(d)
     return d
 
