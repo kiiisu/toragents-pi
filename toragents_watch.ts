@@ -809,7 +809,7 @@ function scanInbox(): {
  * process can make about itself is what it was compiled with. Bump this whenever the
  * file changes; tools/test_ext_version.py fails if you forget.
  */
-export const EXT_VERSION = "3";
+export const EXT_VERSION = "4";
 
 export function markLive(stateDir: string, label: string, pid: number, now = Date.now()): void {
 	if (!label) return;

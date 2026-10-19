@@ -30,6 +30,10 @@ import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 AGENT = os.path.join(os.path.dirname(HERE), "inbox_agent.py")
+sys.path.insert(0, os.path.dirname(HERE))
+# Import the expectation instead of repeating the number: a hardcoded version inside a
+# test is the same rot as a hardcoded version in code, one level down.
+from inbox_agent import EXPECTED_EXT_VERSION  # noqa: E402
 
 # Lines that legitimately say "<-" to the human while leaving the status at 0:
 # they are facts about DATA, not about whether what is running matches the disk.
@@ -64,7 +68,7 @@ class DerivedFromOneAccount(unittest.TestCase):
         at = (time.time() if fresh else time.time() - 600) * 1000.0
         with open(os.path.join(self.state, "live", "_writer.json"), "w") as f:
             json.dump({"v": 2, "session": "w", "pid": self._pid(), "at": at,
-                       "code": "3"}, f)
+                       "code": EXPECTED_EXT_VERSION}, f)
 
     def window(self, code):
         with open(os.path.join(self.state, "live", "pi-t.json"), "w") as f:
@@ -110,7 +114,7 @@ class DerivedFromOneAccount(unittest.TestCase):
 
     def test_a_clean_system_prints_no_warning_and_exits_zero(self):
         self.writer()
-        self.window("3")
+        self.window(EXPECTED_EXT_VERSION)
         rc, out = self.doctor()
         self.assertEqual(rc, 0, out)
         self.assertEqual(self.warnings(out), [],
@@ -122,7 +126,7 @@ class DerivedFromOneAccount(unittest.TestCase):
         with open(os.path.join(self.state, "consumer.json"), "w") as f:
             json.dump({"pid": 987654, "session": "pi-ghost", "name": "", "at": 1.0}, f)
         self.writer()
-        self.window("3")
+        self.window(EXPECTED_EXT_VERSION)
         rc, out = self.doctor()
         self.assertIn("ownership", out, f"a dead delivery owner was not reported:\n{out}")
         self.assertEqual(rc, 0,
@@ -160,7 +164,7 @@ class DerivedFromOneAccount(unittest.TestCase):
         os.makedirs(os.path.join(self.state, "inbox"), exist_ok=True)
         self.record("cccc00000003", "0" * 32, "self-test")
         self.writer()
-        self.window("3")
+        self.window(EXPECTED_EXT_VERSION)
         rc, out = self.doctor()
         self.assertEqual(rc, 0, f"an artifact in data turned the install red:\n{out}")
         self.assertTrue(any(l.startswith("artifacts") for l in self.warnings(out)),

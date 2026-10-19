@@ -33,6 +33,10 @@ import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 AGENT = os.path.join(os.path.dirname(HERE), "inbox_agent.py")
+sys.path.insert(0, os.path.dirname(HERE))
+# Import the expectation instead of repeating the number: a hardcoded version inside a
+# test is the same rot as a hardcoded version in code, one level down.
+from inbox_agent import EXPECTED_EXT_VERSION  # noqa: E402
 
 
 class DoctorCannotAnswer(unittest.TestCase):
@@ -57,7 +61,7 @@ class DoctorCannotAnswer(unittest.TestCase):
         at = (time.time() if fresh else time.time() - 600) * 1000.0
         with open(os.path.join(self.state, "live", "_writer.json"), "w") as f:
             json.dump({"v": 2, "session": "w", "pid": pid, "at": at,
-                       "code": "3"}, f)
+                       "code": EXPECTED_EXT_VERSION}, f)
 
     def doctor(self):
         env = dict(os.environ, TORAGENTS_HOME=self.home, TORAGENTS_STATE=self.state)
@@ -114,7 +118,7 @@ class DoctorCannotAnswer(unittest.TestCase):
 
     def test_a_current_window_is_fine(self):
         self.writer()
-        self.window("3")
+        self.window(EXPECTED_EXT_VERSION)
         rc, out = self.doctor()
         self.assertEqual(rc, 0, out)
         self.assertIn("ok", self.window_line(out), out)
