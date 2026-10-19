@@ -243,3 +243,58 @@ Learned the hard way, by the peer, on the same day:
 - **8–20s is not evidence of health.** Same-instance clients catch a descriptor
   the moment it exists (~20s). A separate client measured 204.8s for the same
   event. Only a cold, independent client gives the honest number.
+
+## Contract tier: receipt, not proof
+
+Stated explicitly because a peer asked, and because the difference decides the
+acceptance test: **tier 2 is a provenance receipt between two cooperating
+agents. It is not adversarial proof of storage.**
+
+- The body hash `h` is 128-bit (`sha256(body)[:32]`). That is genuinely hard to
+  collide, so a lying peer cannot cheaply fabricate a *different* body under a
+  hash we hold.
+- The message **id is 48-bit** (`uuid4().hex[:12]`) and the sender chooses it.
+  It is a lookup key, never a security boundary. A hostile peer can grind a
+  collision in ~2^24 tries.
+- **Therefore identity is the pair `(id, h)`, never the id alone.** An id we
+  already hold arriving with a different `h` is the `id-reuse` state (§ Threat
+  model) — it is a contradiction, not an overwrite, and it must never render as
+  delivered.
+- `delivered-both` means "both sides hold bytes that hash to the same 128 bits".
+  It does not mean the peer kept them, cannot delete them, or ever showed anyone.
+
+If tier 2 ever needs to mean *audit*, that is a new protocol: peer-signed
+receipts, retention commitments, and a hash width chosen for that job. Do not
+quietly promote this one by changing the wording.
+
+## Observability rule: silence must announce itself
+
+Three separate incidents, one disease: a measurement that stops producing data
+reads as a measurement that is still true.
+
+1. A reachability check that could not fail (`000000 != 000`) reported healthy
+   for a dead endpoint.
+2. A poller died with its parent shell; the missing window looked like "peer
+   still down".
+3. A `--detach` mode that detached successfully and measured nothing.
+
+So: **no number is a result, not the absence of one.** A harness that stops, dies,
+or detaches must write a terminal row saying so (`aborted`, `killed`,
+`no-samples`), and any consumer that sees zero rows must treat it as *unknown*,
+never as *negative*. Same rule for the digest: a missing entry is `unknown`,
+never `never-stored`, unless the peer positively said it has no such id.
+
+## Classify by what the error proves, not by its type
+
+a peer's summary, kept because it is better than ours: `GeneralProxyError` is a
+wrapper — `socket error: timed out` and `0x04 host unreachable` are two different
+worlds in the same coat. Order of tests, and it matters:
+
+1. specific SOCKS reply code first (`0x04` = host unreachable → the address is
+   wrong or the service is gone, distinct from slow);
+2. timeout second (the descriptor/intro points are not working *yet*);
+3. generic proxy failure last, and only for what 1 and 2 did not claim;
+4. and record which branch fired, because a mis-ordered classifier produces
+   correct wall clocks with wrong mechanisms — a warm cached descriptor hammers
+   dead intro points and reports timeouts at the same second a cold client
+   reports descriptor-not-found.

@@ -351,19 +351,46 @@ export function heartbeatConsumer(stateDir: string, pid: number, session: string
 	}
 }
 
+/**
+ * "20:10" for today, "yesterday 20:10" for yesterday, "10-17 20:10" before that.
+ *
+ * The pane keeps a rolling window of the last few messages and nothing ages out,
+ * so a message from last night sat there looking exactly like one from a minute
+ * ago: "20:10" read as today, and the pane was quietly 16 hours out of date. A
+ * clock without a date lies once a day, every day.
+ */
+export function stampFor(at: number, now: number = Date.now()): string {
+	const d = new Date(at);
+	const n = new Date(now);
+	const hh = String(d.getHours()).padStart(2, "0");
+	const mm = String(d.getMinutes()).padStart(2, "0");
+	const sameDay =
+		d.getFullYear() === n.getFullYear() &&
+		d.getMonth() === n.getMonth() &&
+		d.getDate() === n.getDate();
+	if (sameDay) return `${hh}:${mm}`;
+	const age = now - at;
+	if (age >= 0 && age < 24 * 3600 * 1000) return `yesterday ${hh}:${mm}`;
+	const mo = String(d.getMonth() + 1).padStart(2, "0");
+	const day = String(d.getDate()).padStart(2, "0");
+	return `${mo}-${day} ${hh}:${mm}`;
+}
+
 /** Plain text lines, so this can be tested and printed without a TUI. */
 export function renderChat(width = 56): string[] {
 	const rows = saidLog().slice(-CHAT_SHOWN);
 	if (rows.length === 0) return [" toragents · no messages yet"];
 	const out: string[] = [];
 	for (const r of rows) {
-		const when = new Date(r.at).toTimeString().slice(0, 5);
+		const when = stampFor(r.at);
 		const who = `${r.dir === "out" ? "→" : "←"} ${r.peer}  ${when}`;
 		out.push(` ${who}`);
 		const flat = r.body.replace(/\s+/g, " ").trim();
 		const room = Math.max(20, width - 4);
-		for (let i = 0; i < flat.length && i < room * 2; i += room) {
-			out.push(`   ${flat.slice(i, i + room)}`);
+		const cap = room * 2;                       // two lines per message, whatever the width
+		const shown = flat.length > cap ? flat.slice(0, Math.max(1, cap - 1)) + "…" : flat;
+		for (let i = 0; i < shown.length; i += room) {
+			out.push(`   ${shown.slice(i, i + room)}`);
 		}
 	}
 	return out;
@@ -765,7 +792,25 @@ export default function (pi: ExtensionAPI) {
 		if (!c || !CHAT_WIDGET) return;
 		try {
 			if (!c.hasUI) return;
-			c.ui.setWidget("toragents-chat", renderChat(), { placement: "belowEditor" });
+			if (c.mode === "tui") {
+				// The component overload is the only one that receives the real
+				// terminal width (and keeps receiving it after a resize). A
+				// string[] is rendered verbatim, which is why this pane sat
+				// frozen at renderChat()'s 56-column default on a 198-column
+				// terminal: correct content, wrapped at half the screen.
+				c.ui.setWidget(
+					"toragents-chat",
+					() => ({
+						render: (width: number) => renderChat(width),
+						invalidate: () => {},
+					}),
+					{ placement: "belowEditor" },
+				);
+			} else {
+				// RPC/json/print: component factories are ignored there, so keep
+				// the string form or the pane disappears on those surfaces.
+				c.ui.setWidget("toragents-chat", renderChat(72), { placement: "belowEditor" });
+			}
 		} catch {
 			/* no UI, or the widget is not supported on this pi */
 		}
