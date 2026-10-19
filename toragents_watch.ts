@@ -829,8 +829,15 @@ export default function (pi: ExtensionAPI) {
 		}
 	};
 
-	/** Side panel on by default; /toragents-chat hides it. */
-	let CHAT_WIDGET = true;
+	/**
+	 * Under-editor chat widget: OFF by default. Maestro rejected it as the
+	 * interface ("half my screen", "not a tmux pane") and the right-hand column
+	 * (toragents-panel.ts) is the reading surface now. Keeping it on by default
+	 * would draw the same chat twice and cost the screen height he complained
+	 * about. Opt in with TORAGENTS_WIDGET=1, or toggle at runtime with
+	 * /toragents-chat.
+	 */
+	let CHAT_WIDGET = /^(1|true|yes|on)$/i.test(String(process.env.TORAGENTS_WIDGET || ""));
 
 	/** Keep the side panel current; safe to call from anywhere. */
 	let CONSUMER = true; // optimistic until the election says otherwise
