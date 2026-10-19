@@ -271,6 +271,7 @@ class Inbox:
         self.lock = threading.Lock()
         self.accepted = self.rejected = 0
         self.addr = onion()
+        self.state_dir = STATE
         self._peers_mtime = self._mtime()
 
     def _mtime(self):
@@ -323,9 +324,64 @@ class Inbox:
             return {"ok": True, "nonce": b64e(self.nonces.issue())}
         if op == "send":
             return self._accept(req)
+        if op == "digest":
+            return self._accept_digest(req)
         return {"ok": False, "error": f"unknown op {op!r}"}
 
+    def _verify_digest(self, req):
+        """Shared by the digest op and the piggybacked dg on a send. Returns
+        (fingerprint, peer) or an error string."""
+        try:
+            pub = PublicKey.from_dict(req["pubkey"])
+            nonce = b64d(req["nonce"])
+            dsig = b64d(req["dsig"])
+        except Exception:
+            return None, "digest frame is missing pubkey/nonce/dsig"
+        dg = req.get("dg")
+        ok, why = dg_validate(dg)
+        if not ok:
+            return None, why
+        try:
+            if not pub.verify(nonce + b"toragents-dg1" + dg_canon(dg), dsig):
+                return None, "digest signature does not verify"
+        except Exception:
+            return None, "digest signature does not verify"
+        fp = pub.fingerprint
+        with self.lock:
+            peer = self.peers.get(fp)
+        if peer is None:
+            return None, "sender not on allowlist"
+        return (fp, peer), None
+
+    def _accept_digest(self, req):
+        # one-use nonce, exactly like send: a replayed digest must not mutate rows
+        if self.nonces.consume(req.get("nonce")) is None:
+            return {"ok": False, "error": "stale or unknown nonce"}
+        got, err = self._verify_digest(req)
+        if err:
+            self.rejected += 1
+            return {"ok": False, "error": err}
+        fp, peer = got
+        res = dg_apply(self.state_dir, fp, req["dg"])
+        print(f"[inbox] dg from {peer.get('label') or fp[:12]}: "
+              f"{'accepted' if res.get('ok') else res.get('error')}", flush=True)
+        return {"ok": bool(res.get("ok")), "error": res.get("error", ""),
+                "applied": len(res.get("rows") or {})}
+
     def _accept(self, req):
+        # Wire sanity before any parsing or auth: a frame above the cap is refused
+        # outright and nothing is stored. This is the only path that can actually
+        # hit DG_MAX_BYTES -- schema-valid digests are ~939 bytes under it.
+        raw_dg = req.get("dg")
+        if raw_dg is not None:
+            try:
+                size = len(dg_canon(raw_dg))
+            except Exception:
+                size = 0
+            if size > DG_MAX_BYTES:
+                self.rejected += 1
+                return {"ok": False,
+                        "error": f"dg exceeds the {DG_MAX_BYTES}-byte limit ({size} bytes)"}
         token, body, pub, sig = (req.get("nonce"), req.get("body"),
                                  req.get("pubkey"), req.get("sig"))
         if not all([token, isinstance(body, str), pub, sig]):
@@ -371,6 +427,18 @@ class Inbox:
         os.replace(path + ".tmp", path)
         self.accepted += 1
         print(f"[inbox] +{mid} from {peer.get('label') or fp[:12]}", flush=True)
+        # Piggybacked digest: applied AFTER the message is safe on disk, and a bad
+        # one is dropped silently-ish -- it must never cost the message. Older
+        # receivers never see this because they ignore the unknown envelope key.
+        if "dg" in req:
+            try:
+                got, err = self._verify_digest(req)
+                if err:
+                    print(f"[inbox] dg dropped: {err}", flush=True)
+                else:
+                    dg_apply(self.state_dir, got[0], req["dg"])
+            except Exception as e:
+                print(f"[inbox] dg dropped: {e}", flush=True)
         return {"ok": True, "id": mid}
 
 
@@ -545,6 +613,16 @@ def send_to(target_onion, body, k=None, session=None, to_session=None):
             payload["from_session"] = session
         if to_session:
             payload["to_session"] = to_session
+        # PIGGYBACK: our current digest rides every send, so provenance lands when
+        # it is wanted with zero extra dials. Old receivers ignore the unknown keys
+        # (the envelope is deliberately forward-compatible); a receiver that fails
+        # to parse it drops the digest, never the message.
+        try:
+            dgp = dg_attach(STATE)
+            payload["dg"] = dgp
+            payload["dsig"] = b64e(k.sign(nonce + b"toragents-dg1" + dg_canon(dgp)))
+        except Exception as e:
+            print(f"[send] WARNING no digest attached: {e}", file=sys.stderr)
         send_msg(sock, payload)
         return recv_msg(sock)
     finally:
@@ -1344,6 +1422,303 @@ def cmd_send(a):
     sys.exit(0 if reply and reply.get("ok") else 1)
 
 
+# ------------------------------------------------------------- tier 2: dg --
+#
+# A digest is an INDEX of what each side holds, never the bodies. Two lists:
+#   a = ids the sender claims to hold OF OURS (attestations about our outbound)
+#   b = ids the sender holds OF ITS OWN (announcing what it sent us)
+# Every item is {id, h, n}: id, 128-bit body hash, byte length. Nothing else,
+# because a body inside a digest is the thing this design exists to avoid.
+
+DG_MAX_ITEMS = 512
+DG_MAX_BYTES = 64 * 1024
+DG_MAX_BODY = 16 * 1024 * 1024
+DG_STATES = ("delivered-both", "accepted-only", "never-stored", "mismatch", "stale")
+DG_ID_RE = re.compile(r"^[0-9a-zA-Z_-]{1,64}$")
+DG_H_RE = re.compile(r"^[0-9a-f]{32}$")
+DG_TOP_KEYS = {"v", "gen", "a", "b", "dsig"}
+
+
+def dg_canon(d):
+    return json.dumps(d, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def dg_hash(body):
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()[:32]
+
+
+def dg_item(mid, body):
+    return {"id": mid, "h": dg_hash(body), "n": len(body.encode("utf-8"))}
+
+
+def dg_validate(d):
+    """Strict. Returns (ok, why) -- never raises, because a bad digest must not
+    be able to break delivery."""
+    if not isinstance(d, dict):
+        return False, "dg is not an object"
+    extra = set(d) - DG_TOP_KEYS
+    if extra:
+        return False, f"unknown field(s) in dg: {', '.join(sorted(extra))}"
+    if d.get("v") != 1:
+        return False, "unsupported dg version"
+    total = 0
+    for side in ("a", "b"):
+        items = d.get(side, [])
+        if not isinstance(items, list):
+            return False, f"dg.{side} is not a list"
+        total += len(items)
+        for it in items:
+            if not isinstance(it, dict):
+                return False, f"dg.{side} contains a non-object item"
+            if set(it) != {"id", "h", "n"}:
+                return False, f"dg item has wrong field(s): {sorted(it)}"
+            if not isinstance(it["id"], str) or not DG_ID_RE.match(it["id"]):
+                return False, "dg item id must be 1..64 of [0-9a-zA-Z_-]"
+            if not isinstance(it["h"], str) or not DG_H_RE.match(it["h"]):
+                return False, "dg item h must be exactly 32 lowercase hex (128-bit)"
+            n = it["n"]
+            if isinstance(n, bool) or not isinstance(n, int) or n < 0 or n > DG_MAX_BODY:
+                return False, "dg item n must be an int 0..16 MiB"
+    if total > DG_MAX_ITEMS:
+        return False, f"dg carries {total} items; the bound is {DG_MAX_ITEMS}"
+    size = len(dg_canon({k: v for k, v in d.items() if k != "dsig"}))
+    if size > DG_MAX_BYTES:
+        return False, f"serialised dg is {size} bytes; the cap is {DG_MAX_BYTES}"
+    return True, ""
+
+
+def dg_build(rows_a=(), rows_b=(), now=None):
+    """Build our digest from records. Accepts records that still carry `body`
+    (ours) and items that are already {id,h,n}; only the three keys survive."""
+    a = []
+    for r in rows_a or ():
+        if not isinstance(r, dict):
+            continue
+        mid = r.get("id") or r.get("peer_id") or r.get("local_id")
+        if not mid:
+            continue
+        if "h" in r and "n" in r:
+            a.append({"id": mid, "h": r["h"], "n": r["n"]})
+        elif isinstance(r.get("body"), str):
+            a.append(dg_item(mid, r["body"]))
+    b = []
+    for r in rows_b or ():
+        if isinstance(r, dict) and {"id", "h", "n"} <= set(r):
+            b.append({"id": r["id"], "h": r["h"], "n": r["n"]})
+    a, b = a[:DG_MAX_ITEMS], b[:DG_MAX_ITEMS - min(len(a), DG_MAX_ITEMS)]
+    return {"v": 1, "gen": now if now is not None else time.time(), "a": a, "b": b}
+
+
+def _seen_path(state_dir):
+    return os.path.join(state_dir, "seen.json")
+
+
+def _load_seen(state_dir):
+    """Tolerant: a corrupt store must never stop delivery. Returns (data, error)."""
+    p = _seen_path(state_dir)
+    if not os.path.exists(p):
+        return {"v": 1, "peers": {}}, None
+    try:
+        with open(p) as f:
+            data = json.load(f)
+        if not isinstance(data, dict) or not isinstance(data.get("peers"), dict):
+            return {"v": 1, "peers": {}}, "unrecognised shape"
+        return data, None
+    except Exception as e:
+        return {"v": 1, "peers": {}}, str(e)
+
+
+def _save_seen(state_dir, data):
+    p = _seen_path(state_dir)
+    os.makedirs(state_dir, exist_ok=True)
+    tmp = p + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(data, f, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, p)
+
+
+def _load_sent(state_dir):
+    out = {}
+    d = os.path.join(state_dir, "sent")
+    if not os.path.isdir(d):
+        return out
+    for name in os.listdir(d):
+        if not name.endswith(".json"):
+            continue
+        try:
+            with open(os.path.join(d, name)) as f:
+                r = json.load(f)
+        except Exception:
+            continue
+        out[r.get("local_id")] = r
+        if r.get("peer_id"):
+            out[r["peer_id"]] = r
+    return out
+
+
+def _load_inbox(state_dir):
+    out = {}
+    d = os.path.join(state_dir, "inbox")
+    if not os.path.isdir(d):
+        return out
+    for name in os.listdir(d):
+        if not name.endswith(".json"):
+            continue
+        try:
+            with open(os.path.join(d, name)) as f:
+                r = json.load(f)
+        except Exception:
+            continue
+        if r.get("id"):
+            out[r["id"]] = r
+    return out
+
+
+def dg_reconcile_row(row):
+    """§4 precedence: never-stored > mismatch > delivered-both > accepted-only."""
+    peer_h = row.get("peer_h")
+    if peer_h is None:
+        return "accepted-only"
+    if row.get("h") is None:
+        return "never-stored"          # a claim with no local anchor is a fabrication
+    if peer_h != row.get("h"):
+        return "mismatch"
+    pn, n = row.get("peer_n"), row.get("n")
+    if pn is not None and n is not None and pn != n:
+        return "mismatch"              # a length the hash cannot explain is a contradiction
+    return "delivered-both"
+
+
+def dg_apply(state_dir, fp, dg):
+    """Merge a received digest into seen.json. Never raises on bad input."""
+    ok, why = dg_validate(dg)
+    data, err = _load_seen(state_dir)
+    peers = data.setdefault("peers", {})
+    peer = peers.setdefault(fp, {"rows": {}, "orphans": [], "caps": {"dg": True, "last": 0},
+                                 "counters": {"dg_in": 0, "dg_bad": 0, "stored": 0, "dropped": 0}})
+    rows = peer.setdefault("rows", {})
+    counts = peer.setdefault("counters", {"dg_in": 0, "dg_bad": 0, "stored": 0, "dropped": 0})
+    if not ok:
+        counts["dg_bad"] = counts.get("dg_bad", 0) + 1
+        _save_seen(state_dir, data)
+        return {"ok": False, "error": why, "rows": rows}
+    counts["dg_in"] = counts.get("dg_in", 0) + 1
+    sent = _load_sent(state_dir)
+    inbox = _load_inbox(state_dir)
+    counts["stored"] = len({r.get("local_id") for r in sent.values()})
+    touched = {}
+    for it in dg.get("a", []):
+        mid, ph, pn = it["id"], it["h"], it["n"]
+        mine = sent.get(mid)
+        row = rows.get(mid) or {"id": mid, "owner": "me", "at": time.time(), "peer_fp": fp,
+                                "n": None, "h": None, "body": False, "peer_at": None,
+                                "peer_n": None, "peer_h": None, "state": "", "why": "",
+                                "peer_first": False, "announced": False}
+        if mine:
+            row["h"], row["n"], row["body"] = mine.get("sha256"), mine.get("len"), True
+        if row.get("peer_h") is not None and row["peer_h"] != ph:
+            row["state"], row["why"] = "mismatch", "id-reuse: same id, different body hash"
+            touched[mid] = row
+            continue                      # never overwrite the first hash we saw
+        row["peer_h"], row["peer_n"], row["peer_at"] = ph, pn, time.time()
+        row["state"] = dg_reconcile_row(row)
+        row["why"] = "" if row["state"] != "never-stored" else "peer claims an id we never minted"
+        row["announced"] = False
+        rows[mid] = row
+        touched[mid] = row
+    for it in dg.get("b", []):
+        mid, ph, pn = it["id"], it["h"], it["n"]
+        got = inbox.get(mid)
+        row = rows.get(mid) or {"id": mid, "owner": "peer", "at": time.time(), "peer_fp": fp,
+                                "n": None, "h": None, "body": False, "peer_at": None,
+                                "peer_n": None, "peer_h": None, "state": "", "why": "",
+                                "peer_first": True, "announced": False}
+        if got:
+            row["h"], row["n"], row["body"] = dg_hash(got.get("body", "")), \
+                len(got.get("body", "").encode()), True
+        row["peer_h"], row["peer_n"], row["peer_at"] = ph, pn, time.time()
+        row["state"] = dg_reconcile_row(row)
+        if row["state"] == "accepted-only" and not got:
+            row["announced"] = True
+            row["why"] = "announced by peer, not received here yet"
+        rows[mid] = row
+        touched[mid] = row
+    peer["last_digest_at"] = time.time()
+    peer["caps"] = {"dg": True, "last": 0}
+    _save_seen(state_dir, data)
+    return {"ok": True, "rows": touched}
+
+
+def dg_attach(state_dir):
+    """Our current digest: everything we hold from this side, built from the store."""
+    sent = {}
+    d = os.path.join(state_dir, "sent")
+    if os.path.isdir(d):
+        for name in sorted(os.listdir(d), key=lambda x: os.path.getmtime(os.path.join(d, x))):
+            if not name.endswith(".json"):
+                continue
+            try:
+                with open(os.path.join(d, name)) as f:
+                    r = json.load(f)
+            except Exception:
+                continue
+            if r.get("state") != "confirmed":
+                continue
+            mid = r.get("peer_id") or r.get("local_id")
+            sent[mid] = {"id": mid, "h": r.get("sha256"), "n": r.get("len")}
+    return dg_build(list(sent.values())[-DG_MAX_ITEMS:])
+
+
+def cmd_dg(a):
+    action = getattr(a, "action", "show") or "show"
+    if action == "build":
+        d = dg_attach(STATE)
+        print(json.dumps(d, indent=2)[:4000])
+        return
+    # `dg show` -- §7: the panel is part of the contract and nothing here may throw
+    data, err = _load_seen(STATE)
+    if err:
+        print(f"digest: unavailable — {err}")
+        return
+    peers = data.get("peers") or {}
+    if not peers:
+        print("digest: no digests received yet — every peer is UNKNOWN, not up to date")
+        return
+    labels = {}
+    try:
+        for fp, v in peers().items():
+            labels[fp] = v.get("label") or fp[:12]
+    except Exception:
+        pass
+    for fp, peer in peers.items():
+        rows = peer.get("rows") or {}
+        counts = peer.get("counters") or {}
+        last = peer.get("last_digest_at")
+        from time import strftime, localtime
+        if last is None:
+            age_txt, stale = "never", True
+        else:
+            age = time.time() - last
+            age_txt = f"{int(age)}s ago" if age < 600 else f"{age/3600:.1f}h ago"
+            stale = age > 12 * 3600
+        tally = {s: 0 for s in DG_STATES}
+        for r in rows.values():
+            tally[r.get("state", "accepted-only")] = tally.get(r.get("state", "accepted-only"), 0) + 1
+        if stale:
+            print(f"STALE: digest from {labels.get(fp, fp[:12])} is {age_txt} old — "
+                  f"counters below are last known, not current")
+            print(f"digest: {len(rows)} rows, stored {counts.get('stored', 0)}, "
+                  f"in {counts.get('dg_in', 0)}, dropped {counts.get('dg_bad', 0)}")
+        else:
+            print(f"digest: {labels.get(fp, fp[:12])} {age_txt} "
+                  f"({len(rows)} rows, stored {counts.get('stored', 0)})")
+        print("  " + "  ".join(f"{k}={v}" for k, v in tally.items() if v))
+        for mid, r in sorted(rows.items(), key=lambda kv: kv[1].get("at", 0))[-12:]:
+            print(f"  {r.get('state','?'):<14} {mid}  {r.get('why','') or ''}".rstrip())
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -1375,6 +1750,9 @@ def main():
     p.add_argument("text", nargs="*", default=None,
                    help="for `add`: the words, as trailing arguments")
     p.set_defaults(fn=cmd_lexicon)
+    p = s.add_parser("dg")
+    p.add_argument("action", choices=["show", "build"], nargs="?", default="show")
+    p.set_defaults(fn=cmd_dg)
     p = s.add_parser("sent")
     p.add_argument("action", choices=["list", "verify", "show"], nargs="?", default="list")
     p.add_argument("id", nargs="?", default="")
@@ -1431,3 +1809,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+

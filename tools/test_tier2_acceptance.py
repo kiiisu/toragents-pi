@@ -261,9 +261,16 @@ class Compat(Pair):
                          "the body must be byte-identical; a new key must not touch it")
         self.assertNotIn("dg", stored, "§2: the digest is an index, never stored as message content")
 
-    def test_2_old_receiver_refuses_the_digest_op_with_that_exact_sentence(self):
-        reply = self.b.digest_op(self.a, dg([item()]))
-        self.assertEqual(reply, {"ok": False, "error": "unknown op 'digest'"},
+    def test_2_old_receiver_refuses_unknown_ops_with_that_exact_sentence(self):
+        """PIN MOVED when digest landed. This pins the refusal SENTENCE
+        for an op the receiver does not implement. It used to use 'digest'
+        itself as the stand-in unknown op; now that digest exists, that would
+        assert our own code is old. The sentence is the subject, not the name."""
+        # Raw op, not the digest_op helper: the helper sends a real `digest`, which
+        # this receiver now implements. The subject here is the wording an
+        # unimplemented op gets, so the op must genuinely be unimplemented.
+        reply = self.b.raw_op({"op": "digest-v9", "nonce": self.b.hello()})
+        self.assertEqual(reply, {"ok": False, "error": "unknown op 'digest-v9'"},
                          "§5.3: the refusal is a capability answer, so its wording is part of the protocol")
 
     def test_3_old_receiver_ignores_a_corrupt_dsig_on_a_valid_send(self):
