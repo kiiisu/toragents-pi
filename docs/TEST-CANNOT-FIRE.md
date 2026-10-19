@@ -27,6 +27,21 @@ fired were recorded as CANNOT-FIRE, and the audit's first table was wrong in the
 direction that matters. Counting is the only reading that can't be fooled by the
 word.
 
+**Reporting rule (adopted 2026-10-19 after two violations in one day by the
+author of this document):** a reported SHA means *the tree that was actually
+executed*, plus whether that tree was dirty. `git log` names a commit; it does
+not tell you what the working tree contained. So the report is either
+
+    ran at <sha>, tree clean (`git status --porcelain` empty)
+
+or
+
+    ran at <sha> + uncommitted changes (the fix was in the tree, not the commit)
+
+Anything else is a number that has outlived its referent. Twice in one day this
+document's author reported a passing run against a commit that did not contain
+the code that passed.
+
 **Standard to aim at:** `sent verify` (the full-outbound store) recomputes every
 hash and length, exits nonzero on disagreement, and its author proved it able to
 fire with three mutations — truncate the body, drop the failure record, tamper
@@ -321,6 +336,68 @@ So the recorder is guarded now, by the same file that proves delivery happens �
 which is the only place a writer can honestly be observed. `test_chat.ts` is left
 alone and still correctly guards the renderer; its header should be read as a
 claim about rendering only.
+
+## Third pass: the delivery-failure pair (HEAD 1d8c847, tree clean)
+
+Run because an undetected fault here means a message silently stops being
+deliverable — the same class as the outbox hole, and the failure the whole
+channel exists to prevent.
+
+| id | test file | mutation | clean | mutant | verdict |
+|----|-----------|----------|-------|--------|---------|
+| F1 | `test_failure.ts` | `if (recorded)` -> `if (false)` (give up without releasing, or release with no marker) | PASS | FAIL | fires |
+| F2 | `test_failure.ts` | never `attempts.delete()` after the third try | PASS | FAIL | fires |
+| K1 | `test_stuck.ts` | park-without-loop -> `unclaim` (re-queue forever) | PASS | FAIL | fires |
+| K2 | `test_stuck.ts` | warn on every parked tick | PASS | PASS | **cannot fire independently** |
+
+F1 fails on two lines at once, which is what makes it a good mutation: the
+claim survives ("still owned by nobody") and the message still claims success
+(`announced=["bad1"]`). Either alone would be a bug; the mutation produces both,
+so a partial fix cannot satisfy the test.
+
+F2 fails at the retry step (`delivered=0`): with the attempt counter never
+cleared, the message is refused a retry it should have been given. Note that F1
+and F2 point in opposite directions — one releases too little, one forgets too
+late — and both are caught, which is the pair of errors a retry loop actually
+makes.
+
+**K2 is the honest negative result.** "The human warned once, not 20x" cannot be
+made to fail by a mutation in the warning itself, because the warning is bounded
+by the attempt counter: the message is parked after three tries, so there is no
+20th tick to warn on. The claim it states — *no notification spam* — is real, but
+it is a consequence of F2's bound rather than a property with its own guard.
+Consequence if the bound ever broke: the assertion would fire, but only because
+the retry loop broke first. It is a corollary, and this document should call it
+one instead of crediting it as coverage.
+
+Recipes:
+
+```
+F1  toragents_watch.ts, poll() give-up branch
+-      if (recorded) {
+-          unclaim(m.id);
+-          forget(announced, m.id);
++      if (false) {
++          unclaim(m.id);
++          forget(announced, m.id);
+  expect: test_failure.ts 1. claimed=["bad1"] FAIL, 2. announced=["bad1"] FAIL
+
+F2  toragents_watch.ts, poll() attempt counter
+-      attempts.delete(m.id);
+-      const recorded = markFailed(
++      /* MUTANT: never forget the attempt */ const recorded = markFailed(
+  expect: test_failure.ts 5. retry delivers the message delivered=0 FAIL
+
+K1  toragents_watch.ts, poll() unwritable-marker branch
+-      } else {
+-          stuck.add(m.id);
++      } else {
++          unclaim(m.id);
+  expect: test_stuck.ts FAIL (message re-queued instead of parked)
+
+K2  no single-replacement mutation changes the count; the guard is the attempt
+    bound from F2. Recorded as a corollary, not as coverage.
+```
 
 ## What this audit does NOT cover
 
