@@ -456,6 +456,13 @@ and restores width, render hook and wheel routing on dispose. That is why the
 panel test asserts the restore — a pane that does not un-narrow leaves pi
 permanently squeezed.
 
+Both panes open with a status that answers "whose turn is it": the trailing run of
+received messages since the last one you sent, named when it is one peer
+(`kisu waiting`) and counted when it is several. It is a pure function of the
+transcript, so it needs no bookkeeping — replying ends the run and the header goes
+quiet on the next paint. A message *total* is deliberately not shown: it only grows,
+and a number that never changes meaning stops being read.
+
 The reader declares `PANEL_VERSION` and reports it when the pane mounts, pinned in
 `tools/test_panel.ts` the way `EXT_VERSION` is pinned for the delivery half. Two
 windows running different reader code look equally healthy from the outside; the

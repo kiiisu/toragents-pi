@@ -67,7 +67,7 @@ import {
  * Self-declared for now, and reported when the pane mounts. It is not yet consumed
  * by doctor; when it is, it should come from here rather than from a second copy.
  */
-export const PANEL_VERSION = 1;
+export const PANEL_VERSION = 2;
 
 const WIDTH_DEFAULT = 46;
 const MIN_TERMINAL = 110;
@@ -297,12 +297,9 @@ export function renderColumn(
 		blocks.push({ key, lines, start: 0 });
 	});
 
-	// One header shows position and, when focused, that focus is on this pane.
-	const unreadCount = msgs.filter((m) => !view.seen.has(keyOf(m)) && m.dir === "in").length;
-	const head =
-		` toragents · ${msgs.length}` +
-		(unreadCount > 0 ? ` · ${unreadCount} unread` : "") +
-		(view.focused ? accent(" · FOCUS") : "");
+	// One header: whose turn it is, and whether this pane has the keyboard.
+	const summary = statusSummary(msgs, view.seen);
+	const head = " toragents" + (summary ? ` · ${summary}` : "") + (view.focused ? accent(" · FOCUS") : "");
 	const foot = view.focused
 		? " j/k · enter open · g/G ends · esc out"
 		: " alt+f focus · alt+j/k · alt+e open";
@@ -330,6 +327,45 @@ export function renderColumn(
 	};
 }
 
+/**
+ * Who is waiting on you.
+ *
+ * A message total is a receipt, not a status: it only grows, it says nothing about
+ * whose turn it is, and at 111 it reads as noise. What a reader actually wants to
+ * know is whether the last word in the thread was theirs or yours.
+ *
+ * So this is a pure function of the transcript — the trailing run of received
+ * messages since the last one you sent. Idempotent (same transcript, same answer,
+ * however many times it is asked) and self-correcting (answer the message and the
+ * run ends, so the count drops to zero on the next paint without anyone resetting
+ * anything).
+ */
+export function waitingOn(msgs: Said[]): { count: number; peers: string[] } {
+	const peers: string[] = [];
+	let count = 0;
+	for (let i = msgs.length - 1; i >= 0 && msgs[i].dir === "in"; i--) {
+		count++;
+		if (!peers.includes(msgs[i].peer)) peers.push(msgs[i].peer);
+	}
+	return { count, peers };
+}
+
+/**
+ * One phrase for the header, or nothing at all.
+ *
+ * Nothing is a real answer: when the last word is yours there is no news, and a
+ * header that always has a number in it trains you to stop reading the number.
+ */
+export function statusSummary(msgs: Said[], seen: Set<string>): string {
+	const waiting = waitingOn(msgs);
+	if (waiting.count > 0) {
+		if (waiting.peers.length === 1) return `${waiting.peers[0]} waiting`;
+		return `${waiting.count} waiting`;
+	}
+	const unread = msgs.filter((m) => m.dir === "in" && !seen.has(keyOf(m))).length;
+	return unread > 0 ? `${unread} unread` : "";
+}
+
 // ── the strip ────────────────────────────────────────────────────────────────
 
 const STRIP_LINES_DEFAULT = 4;
@@ -349,23 +385,17 @@ function stripLines(): number {
  * having. Lines are capped and the newest message is the only one shown, because
  * an inbox strip is a notification, not a reader.
  */
-export function renderStrip(
-	msgs: Said[],
-	width: number,
-	seen: Set<string>,
-	total: number,
-	theme: any,
-): string[] {
+export function renderStrip(msgs: Said[], width: number, seen: Set<string>, theme: any): string[] {
 	const rows = stripLines();
 	const dim = (x: string) => (theme ? theme.fg("dim", x) : x);
 	const accent = (x: string) => (theme ? theme.fg("accent", x) : x);
 	const bold = (x: string) => (theme && theme.bold ? theme.bold(x) : x);
 
-	const unread = msgs.filter((m) => !seen.has(keyOf(m)) && m.dir === "in").length;
 	const newest = msgs[msgs.length - 1];
 	const hint = "/toragents-panel";
+	const summary = statusSummary(msgs, seen);
 	const head =
-		` toragents · ${total}` + (unread > 0 ? accent(` · ${unread} unread`) : "") + (newest ? "" : dim(" · nothing yet"));
+		" toragents" + (summary ? accent(` · ${summary}`) : "") + (newest ? "" : dim(" · nothing yet"));
 	const pad = Math.max(1, width - plainWidth(head) - hint.length - 1);
 	const out: string[] = [truncateToWidth(head + " ".repeat(pad) + dim(hint), width, "")];
 
@@ -631,7 +661,7 @@ export default function (pi: ExtensionAPI) {
 				tui = t;
 				theme = th;
 				return {
-					render: () => renderStrip(msgs, Number(t?.terminal?.columns || 80), view.seen, msgs.length, theme),
+					render: () => renderStrip(msgs, Number(t?.terminal?.columns || 80), view.seen, theme),
 					invalidate() {},
 					dispose: () => {
 						stripOn = false;

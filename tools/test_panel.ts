@@ -117,7 +117,7 @@ delete process.env.TORAGENTS_PANEL;
 
 const { readThread, threadSignature, tldr } = await import("../_lib/toragents-transcript.ts");
 const { SideColumn } = await import("../_lib/toragents-side-column.ts");
-const { PANEL_VERSION, renderColumn, renderStrip, subject } = await import("../toragents-panel.ts");
+const { PANEL_VERSION, renderColumn, renderStrip, statusSummary, subject, waitingOn } = await import("../toragents-panel.ts");
 const { POLICY_DEFAULTS, isReceiver, panelMode, policyPath, readPolicy } = await import("../_lib/toragents-policy.ts");
 
 const theme = { fg: (_c: string, s: string) => s, bold: (s: string) => s };
@@ -125,7 +125,7 @@ const theme = { fg: (_c: string, s: string) => s, bold: (s: string) => s };
 // The reader's self-declared version, pinned the way EXT_VERSION is: a change to how
 // the pane behaves must arrive with a bump, or a window loaded before it will keep
 // rendering the old shape and look healthy. Change this pair together, deliberately.
-ok(PANEL_VERSION === 1, `the reader is panel v1 (found v${PANEL_VERSION}) — bump both sides together`);
+ok(PANEL_VERSION === 2, `the reader is panel v2 (found v${PANEL_VERSION}) — bump both sides together`);
 
 // ── 1. the transcript merge ────────────────────────────────────────────────
 const rows = readThread();
@@ -234,21 +234,46 @@ for (const width of [28, 46, 100]) {
 {
 	const seenAll = new Set(rows.map(kOf));
 	for (const width of [60, 100, 160]) {
-		const out = renderStrip(rows, width, seenAll, rows.length, theme);
+		const out = renderStrip(rows, width, seenAll, theme);
 		ok(out.length === 4, `strip is 4 lines at width ${width}`);
 		ok(out.every((l: string) => visibleWidth(l) <= width), `strip fits ${width} columns`);
 	}
-	const strip = renderStrip(rows, 120, seenAll, rows.length, theme).join("\n");
+	const strip = renderStrip(rows, 120, seenAll, theme).join("\n");
 	const newest = rows[rows.length - 1];
-	ok(strip.includes("toragents · " + rows.length), "strip reports the message count");
+	ok(/toragents · kisu waiting/.test(strip), "strip says who is waiting on you, not how many messages exist");
+	ok(!/toragents · \d+\b(?! waiting)/.test(strip), "strip does not report a message total");
 	ok(strip.includes(subject(newest.body).slice(0, 18)), "strip shows the newest subject");
 	ok(strip.includes("/toragents-panel"), "strip says how to open the full column");
 	ok(/^\s+[←→] kisu/.test(strip.split("\n")[1]), "strip names the peer and direction");
 
 	const unseen = new Set(rows.slice(0, -2).map(kOf));
-	ok(/\d+ unread/.test(renderStrip(rows, 120, unseen, rows.length, theme).join("\n")), "strip counts unread mail");
-	ok(!/unread/.test(strip), "strip is quiet when everything is read");
-	ok(renderStrip([], 100, new Set(), 0, null).length === 4, "an empty strip still occupies its lines");
+	// Unread only matters when nothing is outstanding: with a reply as the last
+	// word, arriving mail is news again, and the count is per-session because
+	// "read" is a property of this window, not of the transcript.
+	{
+		const replied = [...rows, { id: "xxx7", dir: "out" as const, at: rows[rows.length - 1].at + 60, peer: "kisu", body: "replied." }];
+		ok(statusSummary(replied, seenAll) === "", "after a reply, a fully read thread says nothing");
+		const expected = replied.filter((m: any) => m.dir === "in" && !unseen.has(kOf(m))).length;
+		ok(
+			expected > 0 && statusSummary(replied, unseen) === `${expected} unread`,
+			`after a reply, unseen mail is counted (got ${statusSummary(replied, unseen)})`,
+		);
+		ok(/\d+ unread/.test(renderStrip(replied, 120, unseen, theme).join("\n")), "strip falls back to unread when nothing is outstanding");
+	}
+	ok(renderStrip([], 100, new Set(), null).length === 4, "an empty strip still occupies its lines");
+
+	// The status is derived from whose turn it is, so it needs no bookkeeping.
+	{
+		const answered = [...rows, { id: "zzz9", dir: "out", at: rows[rows.length - 1].at + 60, peer: "kisu", body: "replied, with the ledger line and the three corrections named." }];
+		ok(waitingOn(answered).count === 0, "a reply ends the wait");
+		ok(statusSummary(answered, seenAll) === "", "and leaves the header with nothing to say");
+		ok(waitingOn(rows).count > 0 && waitingOn(rows).peers.length === 1, "an unanswered tail names its peer");
+		ok(statusSummary(rows, seenAll) === "kisu waiting", "the header phrase comes from the transcript, not a counter");
+		ok(waitingOn(rows).count === waitingOn([...rows]).count, "waiting is idempotent: same transcript, same answer");
+		const twoPeers = [...rows, { id: "yyy8", dir: "in", at: rows[rows.length - 1].at + 120, peer: "maestro-pc", body: "second peer, same tail." }];
+		ok(statusSummary(twoPeers, seenAll) === "2 waiting", "two peers in the tail are counted, not named");
+	}
+
 }
 
 // ── 5. placement policy (the contract with the delivery half) ──────────────
