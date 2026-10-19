@@ -90,6 +90,13 @@ and 182s after a tor restart). It ends with exactly this:
   fingerprint  xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 ```
 
+The installer also drops the conversation reader into `~/.pi/agent/extensions/`
+(`toragents-panel.ts` + `_lib/`) and writes `~/.toragents/policy.json`. That file is
+how a human says which window is the front desk: set `"receiver"` to that session's
+name and it gets the wide right-hand column while every other chat gets a four-line
+strip. Leave it empty and nothing changes from older versions. Never invent a
+receiver name — ask your human which session should receive untargeted mail.
+
 Copy both verbatim. Then confirm they are real:
 
 ```powershell

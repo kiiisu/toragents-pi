@@ -6,8 +6,8 @@ companions from a ref was fragile (a force-moved tag served stale bytes from the
 CDN, so a pinned one-liner ran a mismatched installer). Embedding makes each
 installer self-contained: one URL, one file, no version skew.
 
-Run after editing inbox_agent.py, wire.py, toragents_watch.ts,
-            toragents_hook.py or tools/install_hooks.py:
+Run after editing inbox_agent.py, wire.py, toragents_watch.ts, toragents-panel.ts
+(or anything in _lib/), toragents_hook.py or tools/install_hooks.py:
     python3 tools/embed.py
 """
 import base64
@@ -20,9 +20,26 @@ SOURCES = {
     "PAYLOAD_WIRE": "wire.py",
     "PAYLOAD_WATCH": "toragents_watch.ts",
     "PAYLOAD_LEXICON": "docs/lexicon.seed.json",
+    # The reader. Four files rather than one because they are four jobs — reading
+    # the transcript, reserving screen columns, the pane itself, and placement
+    # policy — and because the installed layout must be identical to the source
+    # layout: toragents-panel.ts imports ./_lib/* by that exact path.
+    "PAYLOAD_PANEL": "toragents-panel.ts",
+    "PAYLOAD_TRANSCRIPT": "_lib/toragents-transcript.ts",
+    "PAYLOAD_SIDECOL": "_lib/toragents-side-column.ts",
+    "PAYLOAD_POLICY": "_lib/toragents-policy.ts",
 }
 
-VARS = ("PAYLOAD_INBOX", "PAYLOAD_WIRE", "PAYLOAD_WATCH", "PAYLOAD_LEXICON")
+VARS = (
+    "PAYLOAD_INBOX",
+    "PAYLOAD_WIRE",
+    "PAYLOAD_WATCH",
+    "PAYLOAD_LEXICON",
+    "PAYLOAD_PANEL",
+    "PAYLOAD_TRANSCRIPT",
+    "PAYLOAD_SIDECOL",
+    "PAYLOAD_POLICY",
+)
 
 
 def target(installer, var):

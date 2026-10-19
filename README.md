@@ -422,6 +422,45 @@ share a unit name are detected: the installer checks that the running systemd
 unit points at *this* directory, not merely that something called
 `toragents-tor` is active — because on a machine with an older install it is.
 
+## The reader
+
+The extension delivers mail; something still has to *show* the conversation. The
+reader is a second pi extension (`toragents-panel.ts` + `_lib/`) that renders what
+was said, and `setup.sh` installs it alongside the delivery extension.
+
+Where it appears is policy, not preference:
+
+```jsonc
+// ~/.toragents/policy.json   (written once by the installer, never overwritten)
+{
+  "receiver": "",                                  // session NAME that is the front desk
+  "panel": { "default": "strip", "column": [] },   // strip | column | off
+  "fallbackToAnyone": true                         // a closed front desk must not mute the channel
+}
+```
+
+- the session named `receiver` gets the **wide right-hand column**: messages as
+  cards with a derived subject line, a two-line preview, `enter` to open one,
+  `alt+f` to give the column the keyboard, unread dots;
+- every other chat gets a **four-line strip** under the editor, and
+  `/toragents-panel` opens the full column on demand;
+- with no `receiver`, nothing gets the column and delivery is first-come, which is
+  the behaviour every earlier version had.
+
+`TORAGENTS_PANEL=column|strip|0` overrides policy for one window, and
+`TORAGENTS_PANEL_WIDTH` / `TORAGENTS_STRIP_LINES` size the panes.
+
+The column is a real third region, not a widget: it narrows pi's
+`terminal.columns`, paints into the reserved cells inside pi's own render frame,
+and restores width, render hook and wheel routing on dispose. That is why the
+panel test asserts the restore — a pane that does not un-narrow leaves pi
+permanently squeezed.
+
+The subject line is derived, not stored: sentences are scored for technical signal
+(identifiers, shas, paths, `§`refs, figures), so the subject is the line carrying
+the commit id rather than the polite opening, and the sentence that became the
+subject is cut out of the preview so the preview is text you have not read yet.
+
 ## Verification
 
 ```bash
@@ -435,7 +474,15 @@ bun tools/test_batch.ts      # a flood marks only what it rendered
 bun tools/test_stuck.ts      # an unwritable state dir must not loop forever
 python3 tools/test_doctor.py # PENDING vs for-session vs UNROUTABLE
 bun tools/test_session_label.ts # a nested pi must not inherit its parent's name
+./tools/test_panel.sh        # 89 checks: subject lines, cards, strip, column geometry
 ```
+
+`test_panel.sh` is a wrapper rather than a bare `bun tools/test_panel.ts` for one
+reason: the reader imports `@earendil-works/pi-tui` for width-aware truncation, and
+that package only resolves from pi's own node_modules. Nothing is vendored and the
+wrapper adds no dependency — it points `NODE_PATH` at the pi install that is
+already here. It prints `SKIP` and exits 0 when pi or bun is absent, so it cannot
+break a suite on a machine that only runs the python side.
 
 The race test is the one worth understanding: with the claim disabled it
 delivers twice, which is how it was proven able to fail.
