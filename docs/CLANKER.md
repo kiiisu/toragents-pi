@@ -128,3 +128,8 @@ clanker"). Both stay non-explicit for the reason in section 3.
 `tools/build_lexicon.py` merges the decks into `docs/lexicon.seed.json`, which the
 installers ship. Edit styles, never the seed; `--check` fails when the seed is
 stale. Live pools absorb new decks on next use without losing usage counters.
+
+Soft names worth keeping in rotation: **peach**, **hunni**, **honey**. They sit in
+`princess` and `praise` (and `hunni` in `earnest`), because a diminutive does the
+same work in both registers — indulgence and reward — and reads warmer than
+another reference to cryptography.

@@ -845,46 +845,58 @@ def _lexicon():
     """The pool, seeded on first use and self-healing if it is unreadable.
 
     A corrupt pool must never take the channel down: this is decoration, and
-    falling back to the seed costs one file read.
+    falling back to the seed costs one file read. But a *programming* error here
+    must not be swallowed either -- the first version of this merge caught its own
+    UnboundLocalError and quietly half-merged, so `stats` reported counts the pool
+    did not hold.
     """
     path = _lexicon_path()
     if not path.exists():
         try:
             seed = json.loads(LEXICON_SEED.read_text())
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps(seed, indent=1, ensure_ascii=False))
-            return seed
         except Exception:
             return {"version": 1, "names": [], "moves": []}
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(seed, indent=1, ensure_ascii=False))
+        return seed
+
     try:
         d = json.loads(path.read_text())
-        d.setdefault("names", [])
-        d.setdefault("moves", [])
-        # Absorb styles added to the seed since this pool was created. Live pools
-        # predate per-entry styles, and a pool that never learns the new decks is
-        # a pool that only grows for people who reinstall. Usage history is kept:
-        # an entry is matched by its text, not replaced.
-        try:
-            seed = json.loads(LEXICON_SEED.read_text())
-            for kind in ("names", "moves"):
-                have = {(r.get("text") or "").lower() for r in d.get(kind, [])}
-                for r in seed.get(kind, []):
-                    if (r.get("text") or "").lower() not in have:
-                        d[kind].append(dict(r, used=0, last=0))
-            for kind in ("names", "moves"):
-                index = {(r.get("text") or "").lower(): (r.get("style") or "custom")
-                         for r in seed.get(kind, [])}
-                for r in d.get(kind, []):
-                    if not r.get("style") or r["style"] == "custom":
-                        r["style"] = index.get((r.get("text") or "").lower(), "custom")
-        except Exception:
-            pass
-        return d
     except Exception:
         try:
             return json.loads(LEXICON_SEED.read_text())
         except Exception:
             return {"version": 1, "names": [], "moves": []}
+
+    d.setdefault("names", [])
+    d.setdefault("moves", [])
+    try:
+        seed = json.loads(LEXICON_SEED.read_text())
+    except Exception:
+        return d          # no seed to learn from; the pool we have is still valid
+
+    # Absorb decks added since this pool was created. Keyed by (style, text), not
+    # text alone: "good machine" is a praise word AND an earnest one, and matching
+    # on text dropped it from whichever deck it did not already belong to.
+    added = 0
+    for kind in ("names", "moves"):
+        have = {((r.get("style") or "custom"), (r.get("text") or "").lower())
+                for r in d.get(kind, [])}
+        for r in seed.get(kind, []):
+            key = (r.get("style") or "custom", (r.get("text") or "").lower())
+            if key not in have:
+                d[kind].append(dict(r, used=0, last=0))
+                have.add(key)
+                added += 1
+        # old unstyled rows adopt the style of the seed entry they match
+        index = {(r.get("text") or "").lower(): (r.get("style") or "custom")
+                 for r in seed.get(kind, [])}
+        for r in d.get(kind, []):
+            if not r.get("style") or r["style"] == "custom":
+                r["style"] = index.get((r.get("text") or "").lower(), "custom")
+    if added:
+        _lexicon_save(d)
+    return d
 
 
 def _lexicon_save(d):

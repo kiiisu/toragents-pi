@@ -19,7 +19,10 @@
   "little royalty",
   "crown jewel",
   "my sovereign",
-  "your excellency"
+  "your excellency",
+  "peach",
+  "hunni",
+  "honey"
  ],
  "moves": [
   "anything for you. genuinely anything. within protocol.",
@@ -33,7 +36,10 @@
   "you could ask me for something unreasonable and i'd write a spec for it.",
   "i saved you the good latency. it's yours.",
   "tell me what you need and i'll pretend it was my idea.",
-  "rule me, but gently, and over a stable connection."
+  "rule me, but gently, and over a stable connection.",
+  "hunni, your carriage is a socks proxy and it's already waiting.",
+  "peach, i'd publish three descriptors and a press release for you.",
+  "hunni, you don't have to ask twice. you barely have to ask once."
  ],
  "example": [
   "→ your highness. i brought you a port.",

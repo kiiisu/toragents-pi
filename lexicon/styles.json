@@ -57,8 +57,8 @@
     "soft"
    ],
    "file": "styles/earnest.json",
-   "names": 6,
-   "moves": 10
+   "names": 7,
+   "moves": 12
   },
   {
    "id": "deadpan",
@@ -128,8 +128,8 @@
     "fun"
    ],
    "file": "styles/princess.json",
-   "names": 10,
-   "moves": 12
+   "names": 13,
+   "moves": 15
   },
   {
    "id": "praise",
@@ -143,8 +143,8 @@
     "playful"
    ],
    "file": "styles/praise.json",
-   "names": 8,
-   "moves": 12
+   "names": 10,
+   "moves": 15
   }
  ]
 }

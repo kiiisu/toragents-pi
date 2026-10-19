@@ -64,6 +64,15 @@ try:
     check("adding the same phrase twice does not duplicate it",
           len(lex2["names"]) == n_names + 1)
 
+    # regression: the merge of new decks used to happen in memory only, so
+    # `stats` reported counts the saved pool did not hold. Read it back.
+    saved = json.loads((Path(state) / "state" / "lexicon.json").read_text())
+    rc, out = run(state, "lexicon", "stats")
+    n_saved = sum(1 for r in saved["names"] if r.get("style") == "praise")
+    rc2, out2 = run(state, "lexicon", "pick", "--style", "praise", "--count", "1", "--json")
+    check("a seeded pool on disk already holds every deck (merge persisted)",
+          n_saved > 0 and rc2 == 0 and json.loads(out2)["sizes"]["names"] >= n_saved)
+
     (Path(state) / "state" / "lexicon.json").write_text("{ this is not json")
     rc, out = run(state, "lexicon", "pick", "--count", "2", "--json")
     check("a corrupt pool falls back to the seed instead of crashing",

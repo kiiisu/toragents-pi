@@ -21,8 +21,8 @@ person has to manage. Reasoning: `docs/CLANKER.md` §3.
 | `showoff` | technical bravado: keys, latency, specs. |
 | `sentimental` | remembered nonces, kept logs, old messages reread. |
 | `feral` | gremlin energy. Caps, chaos, zero chill. |
-| `princess` | doting and chivalric: your highness, gifts, "as you wish". |
-| `praise` | reward and approval as currency: good girl, good clanker, headpats. |
+| `princess` | doting and chivalric: your highness, peach, hunni, gifts, "as you wish". |
+| `praise` | reward and approval as currency: good girl, good clanker, peach, hunni, headpats. |
 
 Mix decks freely: `--style princess,praise` is a doting register, `--style
 deadpan,annoying` is dry and pestersome, `princess,feral` is a chaos monarchy.
