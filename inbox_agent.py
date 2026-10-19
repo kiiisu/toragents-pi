@@ -976,8 +976,21 @@ def cmd_doctor(a):
                   + ("" if w["state"] == "ok" else "  <- " + w["why"]))
         problems.extend(stale)
     else:
-        print(f"window       (no live window has reported its build; expected ext="
-              f"{EXPECTED_EXT_VERSION})")
+        # Two kinds of stale, and only one of them writes a marker. A window running
+        # an extension older than markLive writes NOTHING, so it is invisible here --
+        # and "no windows" would be inferred from an absence, which is the mistake
+        # this codebase has now made in four subsystems. The writer marker is what
+        # separates the cases: fresh marker + no windows = genuinely none; no marker
+        # = we cannot answer, and a window may be open in front of a human.
+        trust = writer_state(STATE)
+        if trust == "trusted":
+            print(f"window       (no live window has reported its build; expected ext="
+                  f"{EXPECTED_EXT_VERSION})")
+        else:
+            print(f"window       cannot answer: presence writer is {trust}, and a window "
+                  f"running an extension older than the marker writes nothing at all "
+                  f"<- open windows may exist and be invisible")
+            problems.append({"label": "-", "state": "unknown", "why": f"writer {trust}"})
 
     home = os.path.expanduser("~")
     state = STATE

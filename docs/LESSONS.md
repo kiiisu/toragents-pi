@@ -323,3 +323,27 @@ Consequences worth keeping in view:
 - A record accepted while allowlisted stays a record of a legitimate deposit even
   after the peer is removed: `from_known` is written at receipt because that is the
   only moment the question is answered.
+
+## A negative cannot be inferred from an absence
+
+Four subsystems in this codebase made the same error before it was named: absence
+read as evidence.
+
+```
+empty registry   read as "nothing is live"      (presence)
+missing claim    read as "unowned"              (claims)
+missing anchor   read as "peer fabricated"      (never-stored)
+stale anchor     read as a live match           (digest reconcile)
+```
+
+The general fix is always the same: make the unknown state explicit and checkable,
+and let absence fall into it. A positive heartbeat marker turns "empty" into two
+different facts -- "trusted, and genuinely empty" versus "nobody can answer" -- and
+the marker is only honest when the thing that writes it is the thing that knows.
+
+That has a corollary that bites the DETECTOR itself: a window running an extension
+older than the marker writes nothing, so it is invisible to any report that lists
+markers. "No windows reported" and "no window exists" are then the same output, and a
+detector would join its own list of absences read as facts. So the same three states
+are needed one level up: fresh writer + zero windows = none; absent writer = cannot
+answer, exit non-zero; stale writer = cannot answer.
