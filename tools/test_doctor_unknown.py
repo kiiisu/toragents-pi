@@ -56,7 +56,8 @@ class DoctorCannotAnswer(unittest.TestCase):
         pid = proc.pid if proc else 999999
         at = (time.time() if fresh else time.time() - 600) * 1000.0
         with open(os.path.join(self.state, "live", "_writer.json"), "w") as f:
-            json.dump({"v": 2, "session": "w", "pid": pid, "at": at}, f)
+            json.dump({"v": 2, "session": "w", "pid": pid, "at": at,
+                       "code": "3"}, f)
 
     def doctor(self):
         env = dict(os.environ, TORAGENTS_HOME=self.home, TORAGENTS_STATE=self.state)

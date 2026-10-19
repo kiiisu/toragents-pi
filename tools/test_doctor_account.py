@@ -38,7 +38,7 @@ AGENT = os.path.join(os.path.dirname(HERE), "inbox_agent.py")
 # it must cost a visible edit HERE, in the file that enforces the rule. A test below
 # pins the set to exactly these two entries, so adding a third fails twice: once here
 # and once in the assertion that says what "note" is allowed to mean.
-NOTE_PREFIXES = frozenset({"artifacts ", "unowned "})
+NOTE_PREFIXES = frozenset({"artifacts ", "unowned ", "ownership "})
 
 
 class DerivedFromOneAccount(unittest.TestCase):
@@ -63,7 +63,8 @@ class DerivedFromOneAccount(unittest.TestCase):
     def writer(self, fresh=True):
         at = (time.time() if fresh else time.time() - 600) * 1000.0
         with open(os.path.join(self.state, "live", "_writer.json"), "w") as f:
-            json.dump({"v": 2, "session": "w", "pid": self._pid(), "at": at}, f)
+            json.dump({"v": 2, "session": "w", "pid": self._pid(), "at": at,
+                       "code": "3"}, f)
 
     def window(self, code):
         with open(os.path.join(self.state, "live", "pi-t.json"), "w") as f:
@@ -116,10 +117,22 @@ class DerivedFromOneAccount(unittest.TestCase):
                          "a clean system must not print a warning: a detector that speaks "
                          "when nothing is wrong is noise people learn to skip")
 
+    def test_a_hand_edited_owner_is_reported(self):
+        """Ownership by file edit mutes the channel silently; doctor must say so."""
+        with open(os.path.join(self.state, "consumer.json"), "w") as f:
+            json.dump({"pid": 987654, "session": "pi-ghost", "name": "", "at": 1.0}, f)
+        self.writer()
+        self.window("3")
+        rc, out = self.doctor()
+        self.assertIn("ownership", out, f"a dead delivery owner was not reported:\n{out}")
+        self.assertEqual(rc, 0,
+                         "quiet delivery is not running-code mismatch; it is a note, and "
+                         "a note must not turn the install red")
+
     def test_the_note_allowlist_is_closed(self):
         """Adding a third note prefix must be a decision, not a convenience."""
         self.assertEqual(
-            NOTE_PREFIXES, frozenset({"artifacts ", "unowned "}),
+            NOTE_PREFIXES, frozenset({"artifacts ", "unowned ", "ownership "}),
             "the note severity is a closed set: widening it changes what 'doctor' is "
             "allowed to ignore, so it requires editing this assertion deliberately")
 

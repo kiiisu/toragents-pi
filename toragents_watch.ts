@@ -319,8 +319,13 @@ export function readPolicy(stateDir: string): {
 } {
 	const fallback = { receiver: "", fallbackToAnyone: true, loaded: false };
 	try {
-		// Beside the state dir: <home>/policy.json, with <home>/state as stateDir.
-		const path = join(dirname(stateDir), POLICY_FILE);
+		// Policy lives at the HOME root, not beside whatever state dir a caller passed.
+		// TORAGENTS_HOME wins, because that is how a sandbox says where its home is --
+		// resolving from dirname(stateDir) made a sandboxed delivery look policy-less
+		// while the panel (which honours TORAGENTS_HOME) saw a designated receiver. Two
+		// surfaces disagreeing about who the desk is, over a path, is a bug that only
+		// shows up in tests and relocations.
+		const path = join((process.env.TORAGENTS_HOME || "").trim() || dirname(stateDir), POLICY_FILE);
 		const st = statSync(path);
 		const cached = POLICY_CACHE.get(path);
 		if (cached && cached.mtime === st.mtimeMs) return cached.value;

@@ -58,6 +58,9 @@ class AbsentWriter(unittest.TestCase):
     def write_writer(self, fresh=True):
         os.makedirs(self.live, exist_ok=True)
         rec = {"v": 2, "session": "writer", "pid": os.getpid(),
+               # A trusted marker must be a CURRENT writer: the marker licenses
+               # refusals, so it does not get to skip the version check itself.
+               "code": ia.EXPECTED_EXT_VERSION,
                "at": (time.time() if fresh else time.time() - 600) * 1000.0}
         with open(os.path.join(self.live, ia.WRITER_FILE), "w") as f:
             json.dump(rec, f)
@@ -118,6 +121,22 @@ class AbsentWriter(unittest.TestCase):
         body, reply = self.send_targeted("pi-ghost")
         self.assertTrue(reply.get("ok"), f"a stale writer must not block delivery: {reply}")
         self.assertIn("stale", str(reply.get("presence") or ""), reply)
+
+    def test_2b_an_unversioned_writer_is_not_trusted(self):
+        """The marker that licenses a refusal must not itself skip the check.
+
+        A pre-version extension writes a fresh marker with no `code`. Trusting it
+        lets an old window authorise the daemon to refuse mail it cannot receive --
+        the trust anchor exempt from the very check it enables.
+        """
+        os.makedirs(self.live, exist_ok=True)
+        with open(os.path.join(self.live, ia.WRITER_FILE), "w") as f:
+            json.dump({"v": 2, "session": "old", "pid": os.getpid(),
+                       "at": time.time() * 1000.0}, f)     # fresh, but no code
+        body, reply = self.send_targeted("pi-ghost")
+        self.assertTrue(reply.get("ok"),
+                        f"an unversioned writer licensed a refusal: {reply}")
+        self.assertIn("unversioned", str(reply.get("presence") or ""), reply)
 
     def test_3_trusted_writer_refuses_a_label_that_is_not_here(self):
         self.write_writer(fresh=True)

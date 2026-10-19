@@ -859,6 +859,36 @@ def _is_test_label(label):
     return bool(label) and (label in TEST_LABELS or label.startswith("test-"))
 
 
+def _ownership_note(state_dir):
+    """Flag a delivery owner that no live window claims to be.
+
+    Ownership must be transferred by the claiming PROCESS (electConsumer), never by
+    editing consumer.json: a hand-written foreign pid makes the incumbent's isConsumer()
+    false, so it stops heart-beating and stops delivering, while the new pid never
+    claims. The channel goes quiet with no error anywhere. This line is the only place
+    that failure is visible.
+    """
+    p = os.path.join(state_dir, "consumer.json")
+    if not os.path.exists(p):
+        return ""
+    try:
+        with open(p) as f:
+            rec = json.load(f)
+    except (OSError, ValueError):
+        return "ownership    consumer.json is unreadable: delivery ownership is unknown"
+    live = live_labels(state_dir)
+    label = str(rec.get("session") or "")
+    name = str(rec.get("name") or "")
+    fresh = (time.time() * 1000.0 - float(rec.get("at") or 0)) / 1000.0 < LIVE_STALE_MS / 1000.0
+    known = bool((name and live.get(name)) or (label and live.get(label)))
+    if known:
+        return ""
+    why = "stale heartbeat" if not fresh else "no live window reports that session"
+    return (f"ownership    consumer.json names {name or label or rec.get('pid')} but "
+            f"{why} <- delivery may be muted; ownership is claimed by the process "
+            f"itself, never by editing the file")
+
+
 def _window_versions(state_dir):
     """Each live window's self-reported extension build, from what it wrote itself."""
     d = os.path.join(state_dir, "live")
@@ -1013,6 +1043,14 @@ def cmd_doctor(a):
     # disclosure bug was found, so the accident now has a detector rather than an
     # anecdote. Reported, never deleted -- it is evidence.
     strangers, artifacts = _inbox_artifact_report(state)
+    # Ownership is not intended to be hand-edited. If consumer.json names a pid whose
+    # session is not a live window here, the channel can be muted silently: the
+    # incumbent sees a foreign pid, stops heartbeating AND stops delivering, while the
+    # new pid never claims. Reported as a note, because a box can be deliberately quiet.
+    owner = _ownership_note(STATE)
+    if owner:
+        findings.append({"sev": "note", "text": owner})
+
     # NOTE severity, deliberately: these are facts about DATA, not about running code.
     # The exit code answers "is the running system consistent with the disk"; a test
     # frame in an inbox breaks no run. They are still in the account, so the printed
@@ -1876,6 +1914,8 @@ def writer_state(state_dir):
     heartbeat marker lets an empty registry mean "no windows here", which is the one
     reading that licenses a refusal:
 
+      marker fresh, pid alive, code current -> trusted (an empty registry means none)
+      marker fresh but older code            -> unversioned -> cannot answer
       marker fresh, pid alive  -> trusted -> an empty registry really does mean none
       marker absent            -> absent  -> we cannot answer; accept unverified
       marker present but stale -> stale   -> the writer died; do not trust it either
@@ -1903,6 +1943,14 @@ def writer_state(state_dir):
             alive = False
     if not alive or age >= (LIVE_STALE_MS / 1000.0):
         return "stale"
+    # The marker that LICENSES A REFUSAL must itself be current. A pre-version
+    # extension writes a fresh marker with no `code` (or an older one), and trusting
+    # it lets an old window authorise the daemon to refuse mail it cannot receive --
+    # the trust anchor exempt from the check it exists to enable. Below expectation =
+    # cannot answer = accept unverified, which is the safe direction.
+    code = str(rec.get("code") or "")
+    if code != EXPECTED_EXT_VERSION:
+        return "unversioned"
     return "trusted"
 
 

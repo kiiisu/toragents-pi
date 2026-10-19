@@ -121,7 +121,19 @@ const other = { pid: process.pid, session: "pi-otherid", name: "stella" };
 		mod.mayClaimOwnership("stella", { alive: true, fresh: true, name: "rowan" }, { receiver: "", fallbackToAnyone: true })]);
 }
 
-// 8. a corrupt policy file must not change behaviour
+// 8. policy resolution: TORAGENTS_HOME wins over dirname(stateDir)
+{
+	const { S } = mk();
+	const elsewhere = mkdtempSync(join(tmpdir(), "policyhome-"));
+	policy(elsewhere, { receiver: "rowan", fallbackToAnyone: true });
+	const saved = process.env.TORAGENTS_HOME;
+	process.env.TORAGENTS_HOME = elsewhere;
+	const seen = mod.readPolicy(S);       // S is under a DIFFERENT tmp dir
+	process.env.TORAGENTS_HOME = saved;
+	checks.push(["TORAGENTS_HOME decides where policy.json is read from", seen.receiver === "rowan"]);
+}
+
+// 9. a corrupt policy file must not change behaviour
 {
 	const { d, S } = mk();
 	writeFileSync(join(d, "policy.json"), "{ not json");
