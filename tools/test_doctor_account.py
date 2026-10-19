@@ -33,7 +33,12 @@ AGENT = os.path.join(os.path.dirname(HERE), "inbox_agent.py")
 
 # Lines that legitimately say "<-" to the human while leaving the status at 0:
 # they are facts about DATA, not about whether what is running matches the disk.
-NOTE_PREFIXES = ("artifacts ", "unowned ")
+# CLOSED, ENUMERATED SET -- not a pattern, and not a heuristic. A third severity is an
+# escape hatch that could quietly absorb lines which should move the status, so widening
+# it must cost a visible edit HERE, in the file that enforces the rule. A test below
+# pins the set to exactly these two entries, so adding a third fails twice: once here
+# and once in the assertion that says what "note" is allowed to mean.
+NOTE_PREFIXES = frozenset({"artifacts ", "unowned "})
 
 
 class DerivedFromOneAccount(unittest.TestCase):
@@ -93,7 +98,7 @@ class DerivedFromOneAccount(unittest.TestCase):
         warns = self.warnings(out)
         self.assertTrue(warns, "expected at least one warning line to audit")
         for line in warns:
-            if line.startswith(NOTE_PREFIXES):
+            if line.startswith(tuple(NOTE_PREFIXES)):
                 self.assertEqual(rc, 1,
                                  "a note line may not be the only reason for a status; "
                                  f"here it is, and that is what this test is checking: {line}")
@@ -110,6 +115,32 @@ class DerivedFromOneAccount(unittest.TestCase):
         self.assertEqual(self.warnings(out), [],
                          "a clean system must not print a warning: a detector that speaks "
                          "when nothing is wrong is noise people learn to skip")
+
+    def test_the_note_allowlist_is_closed(self):
+        """Adding a third note prefix must be a decision, not a convenience."""
+        self.assertEqual(
+            NOTE_PREFIXES, frozenset({"artifacts ", "unowned "}),
+            "the note severity is a closed set: widening it changes what 'doctor' is "
+            "allowed to ignore, so it requires editing this assertion deliberately")
+
+    def test_a_line_that_reports_a_problem_must_carry_the_marker(self):
+        """The inverse check: without it, a finding printed WITHOUT "<-" escapes audit.
+
+        If "<-" is how a line joins the account, then any line reporting a stale or
+        unknown state and lacking the marker is either a formatting bug or an unwired
+        finding. Both are worth failing over.
+        """
+        self.writer()
+        self.window("2")
+        rc, out = self.doctor()
+        self.assertNotEqual(rc, 0, out)
+        reporters = [l for l in out.splitlines()
+                     if l.startswith(("code ", "window ", "daemon "))]
+        offenders = [l for l in reporters
+                     if ("stale" in l or "cannot answer" in l) and "<-" not in l]
+        self.assertEqual(offenders, [],
+                         f"these lines report a problem but carry no marker, so the "
+                         f"account rule cannot see them: {offenders}")
 
     def test_notes_alone_leave_the_status_clean(self):
         """Data facts do not make the running system inconsistent with the disk."""
