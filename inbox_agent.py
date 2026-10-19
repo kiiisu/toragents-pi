@@ -842,6 +842,18 @@ def _daemon_version():
         return f"unreachable ({e.__class__.__name__})"
 
 
+# Labels that a HARNESS gives itself. Annotation, not authentication: nothing stops
+# a real peer from calling itself "wiretest", so this may only be used to decide what
+# to say in a report -- never to decide what to trust. The record's label is
+# self-declared, which is exactly why the output says so out loud.
+TEST_LABELS = {"wiretest", "self-test", "selftest", "harness", "experiment"}
+
+
+def _is_test_label(label):
+    label = (label or "").strip().lower()
+    return bool(label) and (label in TEST_LABELS or label.startswith("test-"))
+
+
 def _inbox_artifact_report(state_dir):
     """Fingerprints in the inbox that no real sender could have produced.
 
@@ -870,9 +882,21 @@ def _inbox_artifact_report(state_dir):
         # sender: nacl never produces one, and a test frame named "deadbeefcafe"
         # produced exactly this shape on a live box.
         if not hex32.match(fp) or len(set(fp)) <= 1:
-            artifacts.append(f"{mid}({fp[:12] or 'empty'})")
+            label = (r.get("from_label") or "").strip()
+            note = f", self-declared {label!r}" if label else ""
+            artifacts.append(f"{mid}({fp[:12] or 'empty'}{note})")
         elif fp not in known:
-            strangers.append(f"{mid}({fp[:12]})")
+            # Name the label so a human does not have to open the body to triage it.
+            # Marked self-declared because that is all it is: the sender chose it, and
+            # nothing stops a real peer from calling itself "wiretest". Annotation for
+            # reporting only -- never an input to a trust decision.
+            label = (r.get("from_label") or "").strip()
+            note = ""
+            if label:
+                note = f", self-declared {label!r}"
+                if _is_test_label(label):
+                    note += " (test identity)"
+            strangers.append(f"{mid}({fp[:12]}{note})")
     return sorted(strangers), sorted(artifacts)
 
 

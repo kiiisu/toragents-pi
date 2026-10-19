@@ -32,9 +32,12 @@ class DoctorArtifacts(unittest.TestCase):
         self.addCleanup(lambda: subprocess.run(["rm", "-rf", self.home]))
         self.env = dict(os.environ, TORAGENTS_HOME=self.home, TORAGENTS_STATE=self.state)
 
-    def put(self, mid, fp, body="x"):
+    def put(self, mid, fp, body="x", label=""):
+        rec = {"id": mid, "received": 1.0, "from_fingerprint": fp, "body": body}
+        if label:
+            rec["from_label"] = label
         with open(os.path.join(self.state, "inbox", f"20260101-{mid}.json"), "w") as f:
-            json.dump({"id": mid, "received": 1.0, "from_fingerprint": fp, "body": body}, f)
+            json.dump(rec, f)
 
     def doctor(self):
         p = subprocess.run([sys.executable, AGENT, "doctor"], capture_output=True,
@@ -46,6 +49,26 @@ class DoctorArtifacts(unittest.TestCase):
         out = self.doctor()
         self.assertIn("artifacts", out, f"doctor did not report the artifact:\n{out}")
         self.assertIn("beefcafe0001", out, "the report must name the record, not just count")
+
+    def test_a_harness_label_is_called_out_without_opening_the_body(self):
+        """Triage without trust: the label is self-declared, so the report says so.
+
+        Found on a live box: an "unowned sender" turned out to be our own Tor
+        loopback test. Answering that required opening the body, which is exactly the
+        step this annotation removes -- while never letting the label become an input
+        to a trust decision.
+        """
+        self.put("beefcafe0003", "0123456789abcdef0123456789abcdef", label="wiretest")
+        out = self.doctor()
+        self.assertIn("wiretest", out, f"the label was not surfaced:\n{out}")
+        self.assertIn("self-declared", out,
+                      "a self-chosen label must be presented as self-declared, not as fact")
+        self.assertIn("test identity", out, "a harness label should be marked as such")
+
+    def test_an_artifact_also_names_its_label(self):
+        self.put("beefcafe0004", "0" * 32, label="self-test")
+        out = self.doctor()
+        self.assertIn("self-test", out, f"artifact without its label:\n{out}")
 
     def test_unknown_sender_is_reported_as_unowned(self):
         self.put("beefcafe0002", "0123456789abcdef0123456789abcdef")
