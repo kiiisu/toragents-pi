@@ -679,8 +679,16 @@ def sent_confirm(rec, reply):
     if not rec:
         return
     rec = dict(rec)
-    ok = bool(reply and reply.get("ok"))
-    rec["state"] = "confirmed" if ok else "failed"
+    # THREE verdicts, not two. "failed" used to mean both "the peer refused" and
+    # "we never heard back", and those are different claims: a refusal is knowledge,
+    # silence is not. Calling silence a failure lets the store assert something it
+    # cannot know -- the same lie as a bare timestamp with no date.
+    if reply is None:
+        rec["state"] = "unknown"          # no answer: crash window, timeout, cut link
+    elif reply.get("ok"):
+        rec["state"] = "confirmed"
+    else:
+        rec["state"] = "refused"          # the peer positively said no
     rec["peer_id"] = (reply or {}).get("id")
     rec["reply"] = reply
     try:
@@ -717,7 +725,8 @@ def cmd_sent(a):
                 bad.append(r.get("local_id"))
         print(json.dumps({"records": len(recs), "broken": broken, "hash_mismatch": bad,
                           "pending": [r.get("local_id") for r in recs if r.get("state") == "pending"],
-                          "failed": [r.get("local_id") for r in recs if r.get("state") == "failed"]},
+                          "refused": [r.get("local_id") for r in recs if r.get("state") == "refused"],
+                          "unknown": [r.get("local_id") for r in recs if r.get("state") == "unknown"]},
                          indent=2))
         ok = not broken and not bad
         sys.exit(0 if ok else 1)

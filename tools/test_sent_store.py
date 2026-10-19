@@ -44,15 +44,16 @@ class Base(unittest.TestCase):
                            text=True, env=self.env, cwd=REPO)
         return r.returncode, r.stdout + r.stderr
 
-    def seed(self, body, target='"peer"', reply=None):
+    def seed(self, body, target='"peer"', reply="default"):
         """Write one record through the real API the send path uses."""
-        reply = reply if reply is not None else {"ok": True, "id": "abc123def456"}
+        if reply == "default":                # explicit None means "no answer"
+            reply = {"ok": True, "id": "abc123def456"}
         code = (
             "import json,sys;sys.path.insert(0,%r);import inbox_agent as ia;"
             "body=json.loads(sys.stdin.read());"
             "rec=ia.sent_intent('kisu','x.onion',body);"
-            "ia.sent_confirm(rec,json.loads(%r));"
-            "print(rec['local_id'])" % (REPO, json.dumps(reply))
+            "ia.sent_confirm(rec,None if %r is None else json.loads(%r));"
+            "print(rec['local_id'])" % (REPO, json.dumps(reply), json.dumps(reply))
         )
         r = subprocess.run([sys.executable, "-c", code], input=json.dumps(body),
                            capture_output=True, text=True, env=self.env, cwd=REPO)
@@ -93,12 +94,29 @@ class StoreWhole(Base):
 
 
 class FailuresStayVisible(Base):
-    def test_a_failed_send_is_recorded_as_failed_not_dropped(self):
+    def test_a_refused_send_is_recorded_as_refused_not_dropped(self):
         self.seed("never arrived", reply={"ok": False, "error": "hello refused"})
         rc, out = self.cli("sent", "verify")
-        self.assertEqual(rc, 0, out)          # a recorded failure is not corruption
-        self.assertIn('"failed": [', out)
-        self.assertNotIn('"failed": []', out, "a failed send vanished from the store")
+        self.assertEqual(rc, 0, out)          # a recorded refusal is not corruption
+        self.assertNotIn('"refused": []', out, "a refused send vanished from the store")
+
+    def test_silence_is_unknown_never_refused_never_failed(self):
+        """The peer did not answer. That is not knowledge, and must not be filed as
+        one. Kisu's crash window: bytes may be with the peer while we hold only an
+        unanswered intent -- calling that "failed" asserts something we cannot know."""
+        self.seed("no reply at all", reply=None)
+        rc, out = self.cli("sent", "verify")
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn('"unknown": []', out, "silence was not recorded as unknown")
+        self.assertIn('"refused": []', out, "silence was misfiled as a refusal")
+        self.assertIn('"pending": []', out, "silence was left pending after a verdict")
+
+    def test_a_confirmed_send_is_not_filed_under_unknown_or_refused(self):
+        self.seed("delivered fine", reply={"ok": True, "id": "ok123"})
+        rc, out = self.cli("sent", "verify")
+        self.assertEqual(rc, 0, out)
+        self.assertIn('"unknown": []', out)
+        self.assertIn('"refused": []', out)
 
     def test_an_intent_without_a_reply_surfaces_as_pending(self):
         """A send whose reply was lost still went out. Silence must announce itself."""
