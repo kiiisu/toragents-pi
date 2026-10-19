@@ -679,6 +679,12 @@ export function markLive(stateDir: string, label: string, pid: number, now = Dat
 		const dir = join(stateDir, "live");
 		mkdirSync(dir, { recursive: true });
 		writeFileSync(join(dir, `${label}.json`), JSON.stringify({ session: label, pid, at: now }));
+		// The heartbeat MARKER: proof that a writer exists at all. Without it an empty
+		// registry is ambiguous -- "no windows here" and "nobody writes presence" look
+		// identical -- and the daemon would have to choose between refusing targeted
+		// mail (losing messages on an old peer) and accepting it blindly. The marker
+		// lets it trust an empty registry only when a fresh writer vouches for it.
+		writeFileSync(join(dir, "_writer.json"), JSON.stringify({ v: 2, session: label, pid, at: now }));
 	} catch {
 		/* presence is an optimisation for the sender, never a delivery blocker here */
 	}

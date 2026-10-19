@@ -445,11 +445,22 @@ class Inbox:
         # whichever window happens to be open. Refuse and say the label, so the
         # sender's receipt reports a fact instead of a cheerful "sent".
         target_session = (req.get("to_session") or "").strip()
+        presence = ""
         if target_session:
             live = live_labels(self.state_dir)
             if not live.get(target_session):
-                self.rejected += 1
-                return {"ok": False,
+                trust = writer_state(self.state_dir)
+                if trust != "trusted":
+                    # Degrade ADDRESSING, never delivery. We cannot tell "no window
+                    # here" from "nobody wrote the registry", so the message is
+                    # stored and the owner delivers it, with the reason on the
+                    # receipt. Refusing here would make an old peer unreachable for
+                    # exactly the mail a sender bothered to address.
+                    presence = f"unverified: no heartbeat writer ({trust})"
+                    target_session = ""
+                else:
+                    self.rejected += 1
+                    return {"ok": False,
                         "error": f"addressed to {target_session}, no live session on this box",
                         "live_sessions": sorted(k for k, v in live.items() if v)}
 
@@ -458,9 +469,19 @@ class Inbox:
                "from_label": peer.get("label", ""), "from_onion": peer.get("onion", ""),
                "body": body}
         for f in ("from_session", "to_session"):
+            if f == "to_session" and presence:
+                # Unverified address: store the fact, not the address. Keeping it
+                # would let a later reader deliver to a window we could not confirm,
+                # which is the mis-delivery the refusal existed to prevent.
+                continue
             v = req.get(f)
             if isinstance(v, str) and v.strip():
                 rec[f] = v.strip()[:64]
+        if presence:
+            # The receipt and the stored record both say the targeting was not
+            # honoured, and why. Silently dropping the address would look like it
+            # worked; dropping the message would look like it never arrived.
+            rec["presence"] = presence
         path = os.path.join(INBOX, f"{time.time():.0f}-{mid}.json")
         with open(path + ".tmp", "w") as f:
             json.dump(rec, f, indent=2)
@@ -479,7 +500,10 @@ class Inbox:
                     dg_apply(self.state_dir, got[0], req["dg"])
             except Exception as e:
                 print(f"[inbox] dg dropped: {e}", flush=True)
-        return {"ok": True, "id": mid}
+        reply = {"ok": True, "id": mid}
+        if presence:
+            reply["presence"] = presence
+        return reply
 
 
 def client_loop(conn, box):
@@ -1632,6 +1656,54 @@ def live_labels(state_dir):
                 alive = False
         live[label] = alive and age < (LIVE_STALE_MS / 1000.0)
     return live
+
+
+WRITER_FILE = "_writer.json"
+
+
+def writer_state(state_dir):
+    """Can this box's presence registry be trusted to answer?
+
+    Returns "trusted" | "absent" | "stale".
+
+    The failure this exists for: a peer on an OLD build writes NO presence at all.
+    Their windows are open, the registry is empty, and a targeted message is refused
+    "no live session on this box" -- which is not "cannot address", it is "cannot
+    receive", for exactly the mail the sender cared about. Presence may gate
+    addressing; it must never gate delivery.
+
+    So absence is the UNTRUSTED default, not evidence of absence. Only a fresh
+    heartbeat marker lets an empty registry mean "no windows here", which is the one
+    reading that licenses a refusal:
+
+      marker fresh, pid alive  -> trusted -> an empty registry really does mean none
+      marker absent            -> absent  -> we cannot answer; accept unverified
+      marker present but stale -> stale   -> the writer died; do not trust it either
+      marker names a dead pid  -> stale   -> same
+
+    A marker in a directory where nothing ever ran cannot exist, and that is the
+    point: the unknown case has to be the safe one.
+    """
+    p = os.path.join(state_dir, "live", WRITER_FILE)
+    if not os.path.exists(p):
+        return "absent"
+    try:
+        with open(p) as f:
+            rec = json.load(f)
+    except (OSError, ValueError):
+        return "absent"
+    age = (time.time() * 1000.0 - float(rec.get("at") or 0)) / 1000.0
+    pid = rec.get("pid")
+    alive = False
+    if isinstance(pid, int) and pid > 0:
+        try:
+            os.kill(pid, 0)
+            alive = True
+        except OSError:
+            alive = False
+    if not alive or age >= (LIVE_STALE_MS / 1000.0):
+        return "stale"
+    return "trusted"
 
 
 def _seen_path(state_dir):
