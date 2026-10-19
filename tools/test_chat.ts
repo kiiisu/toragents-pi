@@ -38,6 +38,24 @@ const checks: Array<[string, boolean]> = [
 	["empty transcript says so instead of rendering nothing",
 		(() => { writeFileSync(join(STATE, "chat.jsonl"), ""); return (mod.renderChat() as string[]).join("").includes("no messages yet"); })()],
 ];
+// peerTone: the register must be findable by label and absent when unset --
+// a null answer must not read as "no tone configured" vs "peers unreadable".
+writeFileSync(
+	join(STATE, "peers.json"),
+	JSON.stringify({
+		aa11: { label: "Kisu", onion: "x.onion", tone: "playful, technical, gentle" },
+		bb22: { label: "someone", onion: "y.onion" },
+	}),
+);
+checks.push(
+	["tone found by label, case-insensitively",
+		mod.peerTone(STATE, "kisu") === "playful, technical, gentle"],
+	["peer without a tone reports empty, not the last tone",
+		mod.peerTone(STATE, "someone") === ""],
+	["unknown peer reports empty",
+		mod.peerTone(STATE, "nobody") === ""],
+);
+
 const bad = checks.filter(([, ok]) => !ok);
 for (const [n, ok] of checks) console.log(`  ${n.padEnd(52)} ${ok ? "PASS" : "FAIL"}`);
 console.log(`\n  ${checks.length - bad.length} passed, ${bad.length} failed`);

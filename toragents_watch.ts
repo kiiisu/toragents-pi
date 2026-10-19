@@ -161,6 +161,23 @@ function saidLog(): Array<{ at: number; dir: string; peer: string; body: string 
 	}
 }
 
+/**
+ * Voice for a peer, read at compose time. Not remembered between messages: a
+ * register that lives only in an agent's head is the one that drifts.
+ */
+export function peerTone(stateDir: string, label: string): string {
+	try {
+		const peers = JSON.parse(readFileSync(join(stateDir, "peers.json"), "utf8"));
+		const want = label.trim().toLowerCase();
+		for (const v of Object.values<any>(peers)) {
+			if ((v?.label || "").toLowerCase() === want) return (v.tone || "").trim();
+		}
+	} catch {
+		/* no allowlist, or unreadable: no tone is a valid answer */
+	}
+	return "";
+}
+
 /** Plain text lines, so this can be tested and printed without a TUI. */
 export function renderChat(width = 56): string[] {
 	const rows = saidLog().slice(-CHAT_SHOWN);
@@ -787,16 +804,19 @@ export default function (pi: ExtensionAPI) {
 				}
 				logSaid("out", String(params.to), String(params.body ?? ""), id);
 				paintChat();
+				const tone = peerTone(STATE, String(params.to));
 				return {
 					content: [
 						{
 							type: "text" as const,
-							text: id
-								? `sent to ${params.to} — id ${id}`
-								: `send to ${params.to} reported success:\n${out.slice(-600)}`,
+							text:
+								(id
+									? `sent to ${params.to} — id ${id}`
+									: `send to ${params.to} reported success:\n${out.slice(-600)}`) +
+								(tone ? `\nregister for ${params.to}: ${tone}` : ""),
 						},
 					],
-					details: { to: params.to, id, ok: true },
+					details: { to: params.to, id, ok: true, tone }, 
 				};
 			},
 	});

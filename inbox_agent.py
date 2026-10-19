@@ -788,12 +788,42 @@ def cmd_add_peer(a):
     print(f"allowlisted {p[fp]['label']} ({fp[:12]}...) -> {a.onion}")
 
 
+def cmd_tone(a):
+    """Per-peer voice: read it when composing, don't try to remember it.
+
+    Stored next to the peer so it travels with the allowlist and is read fresh
+    on the nth message instead of drifting the way a remembered habit does.
+    """
+    p = _writable_peers()
+    wanted = (a.label or "").strip().lower()
+    matches = [(fp, v) for fp, v in p.items()
+               if (v.get("label") or "").lower() == wanted or fp.startswith(wanted)]
+    if not matches:
+        sys.exit(f"no peer matching {a.label!r} (see `inbox peers`)")
+    fp, v = matches[0]
+    if a.clear:
+        v.pop("tone", None)
+        p[fp] = v
+        save_peers(p)
+        print(f"cleared tone for {v.get('label')}")
+        return
+    if a.text is None:
+        print(v.get("tone") or f"(no tone set for {v.get('label')} — plain register)")
+        return
+    v["tone"] = " ".join(a.text).strip()
+    p[fp] = v
+    save_peers(p)
+    print(f"tone for {v.get('label')}: {v['tone']}")
+
+
 def cmd_peers(a):
     p = peers()
     if not p:
         print("(no peers allowlisted)")
     for fp, v in sorted(p.items(), key=lambda kv: kv[1].get("label", "")):
-        print(f"{v.get('label',''):18} {fp[:16]}...  {v['onion']}")
+        tone = v.get("tone")
+        print(f"{v.get('label',''):18} {fp[:16]}...  {v['onion']}"
+              + (f"\n{'':18} tone: {tone}" if tone else ""))
 
 
 def _msgs(include_archived=False):
@@ -911,6 +941,12 @@ def main():
     p.add_argument("--onion", required=True)
     p.add_argument("--label", default="")
     p.set_defaults(fn=cmd_add_peer)
+    p = s.add_parser("tone")
+    p.add_argument("label")
+    p.add_argument("text", nargs="*", default=None,
+                   help="omit to print the current tone, give words to set it")
+    p.add_argument("--clear", action="store_true")
+    p.set_defaults(fn=cmd_tone)
     p = s.add_parser("inbox")
     p.add_argument("--all", action="store_true")
     p.set_defaults(fn=cmd_inbox)
