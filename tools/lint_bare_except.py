@@ -17,6 +17,13 @@ Three shipped instances, all found by tripping over them:
   2. PublicIdentity.verify swallowed every exception into False
   3. the outer signature check turned that False into "signature does not verify"
 
+The principle, in kisu's words (2026-10-19), because it is better than mine: an
+except clause is a CLAIM about how the guarded block can fail. A bare except
+claims "I understand every failure", which is never true, so it always lies about
+at least one of them. Narrowing it is not tidiness -- it is making the claim true.
+Catch what the block can actually raise; let the rest escape and say their own
+name.
+
 Usage:  python3 tools/lint_bare_except.py [paths...]     (no args = this repo)
 Exit:   0 = clean, 1 = findings, 2 = the lint itself failed.
 """
