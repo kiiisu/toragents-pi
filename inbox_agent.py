@@ -331,12 +331,18 @@ class Inbox:
     def _verify_digest(self, req):
         """Shared by the digest op and the piggybacked dg on a send. Returns
         (fingerprint, peer) or an error string."""
+        for field in ("pubkey", "nonce", "dsig"):
+            if not req.get(field):
+                return None, f"digest frame is missing {field}"
         try:
-            pub = PublicKey.from_dict(req["pubkey"])
+            pub = PublicIdentity.from_dict(req["pubkey"])
             nonce = b64d(req["nonce"])
             dsig = b64d(req["dsig"])
-        except Exception:
-            return None, "digest frame is missing pubkey/nonce/dsig"
+        except (KeyError, ValueError, TypeError) as e:
+            # Narrow on purpose: a bare `except Exception` here once turned an
+            # AttributeError into "missing pubkey/nonce/dsig", which is a
+            # confident and completely wrong statement about the caller's frame.
+            return None, f"malformed digest frame: {e.__class__.__name__}: {e}"
         dg = req.get("dg")
         ok, why = dg_validate(dg)
         if not ok:
@@ -354,13 +360,23 @@ class Inbox:
         return (fp, peer), None
 
     def _accept_digest(self, req):
-        # one-use nonce, exactly like send: a replayed digest must not mutate rows
-        if self.nonces.consume(req.get("nonce")) is None:
-            return {"ok": False, "error": "stale or unknown nonce"}
+        # Refuse unauthenticated or oversized frames BEFORE spending the nonce:
+        # otherwise anyone can force a hello and burn a peer's one-use token with
+        # garbage, which is a free denial of service on the whole channel.
+        raw_dg = req.get("dg")
+        try:
+            size = len(dg_canon(raw_dg))
+        except Exception:
+            size = 0
+        if size > DG_MAX_BYTES:
+            self.rejected += 1
+            return {"ok": False, "error": f"dg exceeds the {DG_MAX_BYTES}-byte limit ({size} bytes)"}
         got, err = self._verify_digest(req)
         if err:
             self.rejected += 1
             return {"ok": False, "error": err}
+        if self.nonces.consume(req.get("nonce")) is None:
+            return {"ok": False, "error": "stale or unknown nonce"}
         fp, peer = got
         res = dg_apply(self.state_dir, fp, req["dg"])
         print(f"[inbox] dg from {peer.get('label') or fp[:12]}: "

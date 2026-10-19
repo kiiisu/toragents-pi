@@ -494,18 +494,76 @@ class Adversarial(Pair):
         self.assertIn("id-reuse", (row.get("why") or ""), "the reason must name the reuse")
         self.assertNotEqual(row.get("h"), "b" * 32, "the first hash must never be overwritten")
 
-    def test_a_digest_frame_cannot_be_replayed(self):
+    def _digest_payload(self, d=None):
+        """One dg object, signed and sent as the SAME object.
+
+        It used to be built twice (once to sign, once to send), and because `gen`
+        is a float timestamp the two differed by microseconds -- so the signature
+        never verified and every digest op was refused. The replay test below
+        still "passed" that way, asserting a refusal it had accidentally caused.
+        """
+        d = dg([item()]) if d is None else d
         nonce_b64 = self.b.hello()
-        payload = {"op": "digest", "v": 1, "nonce": nonce_b64,
-                   "pubkey": self.a.keys.public().to_dict(),
-                   "dsig": dsig_for(self.a.keys, wire.b64d(nonce_b64), dg([item()])),
-                   "dg": dg([item()])}
+        return {"op": "digest", "v": 1, "nonce": nonce_b64,
+                "pubkey": self.a.keys.public().to_dict(),
+                "dsig": dsig_for(self.a.keys, wire.b64d(nonce_b64), d),
+                "dg": d}
+
+    def test_an_oversized_digest_op_is_refused_for_size_before_auth(self):
+        """Kisu's scope note: the cap is checked first on the send path only.
+
+        On the dedicated `digest` op the frame is refused for missing auth, which
+        means the size check runs after the parse it exists to prevent. Size must
+        win the race, or the cap protects nothing on a path an attacker can drive.
+        """
+        huge = {"v": 1, "gen": 0, "a": [], "b": [], "pad": "A" * (64 * 1024 + 64)}
+        reply = self.b.raw_op({"op": "digest", "nonce": self.b.hello(), "dg": huge})
+        why = (reply or {}).get("error", "")
+        self.assertIn("size", why.lower() + " size" if "byte" in why.lower() or "limit" in why.lower() else why.lower(),
+                      f"an oversized digest frame was refused for the wrong reason: {why!r}")
+
+    def test_an_oversized_digest_frame_does_not_burn_the_nonce(self):
+        """A one-use nonce consumed by a frame we then refuse is a free denial of
+        service: the peer must hello again for every oversized frame we are sent."""
+        nonce = self.b.hello()
+        huge = {"v": 1, "gen": 0, "a": [], "b": [], "pad": "A" * (64 * 1024 + 64)}
+        self.b.raw_op({"op": "digest", "nonce": nonce, "dg": huge})
+        d = dg([item()])
+        good = {"op": "digest", "v": 1, "nonce": nonce,
+                "pubkey": self.a.keys.public().to_dict(),
+                "dsig": dsig_for(self.a.keys, wire.b64d(nonce), d), "dg": d}
+        reply = self.b.raw_op(good)
+        self.assertTrue((reply or {}).get("ok"),
+                        f"the nonce was burned by a refused frame: {reply}")
+
+    def test_a_valid_signed_digest_op_is_accepted_and_lands_in_seen(self):
+        """The assertion whose ABSENCE made a broken digest look finished.
+
+        Every `digest` frame used to be refused with "digest frame is missing
+        pubkey/nonce/dsig" because _verify_digest called PublicKey.from_dict()
+        and wire only defines PublicIdentity.from_dict(). The AttributeError was
+        swallowed by a bare `except Exception`, so the failure named a missing
+        key instead of a missing method. Nothing asserted acceptance, so 25
+        green tests sat on top of a feature that could not receive one digest.
+        """
+        payload = self._digest_payload()
+        reply = self.b.raw_op(payload)
+        self.assertTrue((reply or {}).get("ok"), f"a valid digest was refused: {reply}")
+        seen = os.path.join(self.b.state, "seen.json")
+        self.assertTrue(os.path.exists(seen), "an accepted digest wrote no seen.json")
+        data = json.load(open(seen))
+        self.assertIn(self.a.fingerprint, data.get("peers", {}),
+                      "the digest was accepted but attributed to nobody")
+
+    def test_a_digest_frame_cannot_be_replayed(self):
+        payload = self._digest_payload()
         first = self.b.raw_op(payload)
         seen = os.path.join(self.b.state, "seen.json")
         before = open(seen, "rb").read() if os.path.exists(seen) else b""
         replay = self.b.raw_op(payload)
         after = open(seen, "rb").read() if os.path.exists(seen) else b""
-        self.assertFalse(first.get("ok"), "an unimplemented digest op must refuse, not accept")
+        self.assertTrue(first.get("ok"),
+                        f"a valid signed digest must be ACCEPTED now that the op exists: {first}")
         self.assertFalse(replay.get("ok"), "a replayed frame was accepted")
         self.assertEqual(before, after, "a replay must not mutate the row store")
 
