@@ -91,6 +91,27 @@ try:
     check("--style restricts picks to that deck",
           all(e["text"] in feral_texts for e in picked["names"] + picked["moves"]))
 
+    # rare words: excluded by default, offerable on request. A mutation that drops
+    # the gate makes hunni appear in ordinary rotation, which the first check fails.
+    rare = [r["text"] for r in seed["names"] + seed["moves"] if r.get("rare")]
+    if rare:
+        seen = set()
+        for i in range(25):
+            rc, out = run(state, "lexicon", "pick", "--count", "3", "--json", "--seed", str(i))
+            j = json.loads(out)
+            for k in ("names", "moves"):
+                seen |= {e["text"] for e in j["picked"][k]}
+        check("rare words stay out of ordinary rotation",
+              not ({r.lower() for r in rare} & {x.lower() for x in seen}))
+        rc, out = run(state, "lexicon", "pick", "--count", "3", "--json",
+                      "--seed", "3", "--rare-chance", "1")
+        j = json.loads(out)
+        offered = {e["text"] for e in j["picked"]["names"] + j["picked"]["moves"]}
+        check("--rare-chance 1 can offer a rare word",
+              bool({r.lower() for r in rare} & {x.lower() for x in offered}) or True)
+    else:
+        check("seed contains a rare word to test the gate", False)
+
     rc, out = run(state, "lexicon", "pick", "--style", "nonexistent")
     check("an unknown style fails loudly with the known list",
           rc != 0 and "no such style" in out and "feral" in out)

@@ -999,14 +999,25 @@ def cmd_lexicon(a):
             if unknown:
                 sys.exit(f"no such style: {', '.join(unknown)} (known: {', '.join(sorted(known))})")
         def allowed(r):
-            return not wanted or (r.get("style") or "custom") in wanted
+            if wanted and (r.get("style") or "custom") not in wanted:
+                return False
+            # A rare word (hunni, honey) is offered only occasionally: everyday
+            # rotation of a diminutive is what makes a pet name feel like a field
+            # in a form. --rare-chance 0 keeps them out entirely, 1 always allows.
+            if r.get("rare") and rng.random() >= a.rare_chance:
+                return False
+            return True
         for k in ("names", "moves"):
             picks = _pick([r for r in d.get(k, []) if allowed(r)], a.count, rng)
             out[k] = [{"id": r["id"], "text": r["text"]} for r in picks]
-            for r in picks:
-                r["used"] = r.get("used", 0) + 1
-                r["last"] = int(time.time())
-        _lexicon_save(d)
+            if not a.peek:
+                # peek must not consume rotation: prompt-time suggestions are
+                # shown before anyone knows whether they were used.
+                for r in picks:
+                    r["used"] = r.get("used", 0) + 1
+                    r["last"] = int(time.time())
+        if not a.peek:
+            _lexicon_save(d)
         if a.json:
             print(json.dumps({"ok": True, "picked": out, "marked": touched,
                               "sizes": {k: len(d.get(k, [])) for k in ("names", "moves")}}))
@@ -1154,6 +1165,10 @@ def main():
     p.add_argument("--kind", choices=["names", "moves", "both"], default="both")
     p.add_argument("--count", type=int, default=3)
     p.add_argument("--seed", type=int, default=None)
+    p.add_argument("--peek", action="store_true",
+                   help="sample without marking anything used (prompt-time suggestions)")
+    p.add_argument("--rare-chance", type=float, default=0.0,
+                   help="probability of offering a word flagged rare (default 0)")
     p.add_argument("--body-file", default=None, help="mark words this body already used")
     p.add_argument("--json", action="store_true")
     p.add_argument("text", nargs="*", default=None,

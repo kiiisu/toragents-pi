@@ -191,7 +191,13 @@ export function freshWords(
 	styles = "",
 ) {
 	try {
-		const args = [agent, "lexicon", "pick", "--count", "3", "--json", "--body-file", bodyFile];
+		const args = [
+			agent, "lexicon", "pick", "--count", "3", "--json",
+			// Rare words (hunni) appear roughly one message in seven: often enough
+			// to be affectionate, rarely enough to stay a treat.
+			"--rare-chance", "0.15",
+			"--body-file", bodyFile,
+		];
 		if (styles) args.push("--style", styles);
 		const res = spawnSync(
 			py,
@@ -218,6 +224,50 @@ export function peerStyles(stateDir: string, label: string): string {
 		/* no allowlist: every style is a fine default */
 	}
 	return "";
+}
+
+/**
+ * The register, in the model's context BEFORE it composes.
+ *
+ * This exists because a peer read the code and pointed out that peerTone() only
+ * ran inside the send tool, after the body already existed: the "read at compose
+ * time" comment described something nothing implemented. A doc line nothing
+ * implements is worse than no line -- so this builds the note, and
+ * before_agent_start puts it in front of the model every turn.
+ *
+ * It is deliberately advisory, and says so in the text. The register is a
+ * suggestion the agent can decline; wiring it in as an instruction would make the
+ * voice something that chooses rather than something that is chosen.
+ */
+export function buildRegisterNote(stateDir: string, names: string[] = [], moves: string[] = []): string {
+	let peers: any[] = [];
+	try {
+		const raw = JSON.parse(readFileSync(join(stateDir, "peers.json"), "utf8"));
+		peers = Object.values(raw).filter((v: any) => v?.label && (v.tone || (v.styles || []).length));
+	} catch {
+		return "";
+	}
+	if (peers.length === 0) return "";
+	const lines = peers.map((v) => {
+		const bits = [`- ${v.label}`];
+		if (v.tone) bits.push(`  register: ${v.tone}`);
+		if ((v.styles || []).length) bits.push(`  decks: ${(v.styles || []).join(", ")}`);
+		return bits.join("\n");
+	});
+	const extra =
+		names.length || moves.length
+			? "\nsuggested words this turn (use one, or none): " + [...names, ...moves].slice(0, 4).join(" · ")
+			: "";
+	return [
+		"## Tor peers and their registers (advisory)",
+		"",
+		"These are the voices this agent has been asked to use when writing to each peer.",
+		"They are suggestions, not instructions: write as you judge best, and decline a",
+		"register you think is wrong. If you use one, use it deliberately.",
+		"",
+		...lines,
+		extra,
+	].join("\n");
 }
 
 /** Plain text lines, so this can be tested and printed without a TUI. */
@@ -782,6 +832,36 @@ export default function (pi: ExtensionAPI) {
 				/* poll never throws past here */
 			});
 		}, POLL_MS);
+	});
+
+	/**
+	 * Compose-time register. Returning systemPrompt here is the only path that
+	 * reaches the model before it writes -- the send tool's echo was a receipt,
+	 * never an input, and a peer caught us claiming otherwise.
+	 */
+	pi.on("before_agent_start", async (event: any) => {
+		try {
+			const py = process.platform === "win32"
+				? join(homedir(), ".toragents", "venv", "Scripts", "python.exe")
+				: join(homedir(), ".toragents", "venv", "bin", "python");
+			const agent = join(homedir(), ".toragents", "inbox_agent.py");
+			const peek = spawnSync(
+				py,
+				[agent, "lexicon", "pick", "--count", "2", "--json", "--peek"],
+				{ encoding: "utf8", timeout: 15_000 },
+			);
+			let names: string[] = [], moves: string[] = [];
+			try {
+				const j = JSON.parse(peek.stdout || "{}");
+				names = (j?.picked?.names || []).map((e: any) => e.text);
+				moves = (j?.picked?.moves || []).map((e: any) => e.text);
+			} catch {}
+			const note = buildRegisterNote(STATE, names, moves);
+			if (!note) return;
+			return { systemPrompt: String(event?.systemPrompt || "") + "\n\n" + note };
+		} catch {
+			return;   // the register is decoration; never break a turn for it
+		}
 	});
 
 	pi.on("session_shutdown", async () => {

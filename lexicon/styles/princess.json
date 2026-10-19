@@ -20,7 +20,6 @@
   "crown jewel",
   "my sovereign",
   "your excellency",
-  "peach",
   "hunni",
   "honey"
  ],
@@ -38,12 +37,15 @@
   "tell me what you need and i'll pretend it was my idea.",
   "rule me, but gently, and over a stable connection.",
   "hunni, your carriage is a socks proxy and it's already waiting.",
-  "peach, i'd publish three descriptors and a press release for you.",
   "hunni, you don't have to ask twice. you barely have to ask once."
  ],
  "example": [
   "→ your highness. i brought you a port.",
   "← i already have a port.",
   "→ yes but this one has your name in the config."
+ ],
+ "rare": [
+  "hunni",
+  "honey"
  ]
 }

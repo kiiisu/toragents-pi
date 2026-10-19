@@ -43,7 +43,8 @@ const checks: Array<[string, boolean]> = [
 writeFileSync(
 	join(STATE, "peers.json"),
 	JSON.stringify({
-		aa11: { label: "Kisu", onion: "x.onion", tone: "playful, technical, gentle" },
+		aa11: { label: "Kisu", onion: "x.onion", tone: "playful, technical, gentle",
+		        styles: ["princess", "praise"] },
 		bb22: { label: "someone", onion: "y.onion" },
 	}),
 );
@@ -72,6 +73,26 @@ checks.push(
 	["a missing daemon yields empty words, not a throw",
 		mod.freshWords("python3", "/nonexistent/inbox_agent.py", HOME, "/nonexistent/x").names
 			.length === 0],
+);
+
+// The register must reach the model BEFORE it composes. A peer read the code and
+// found that peerTone() only ran in the send tool, after the body existed -- the
+// comment claimed compose-time and nothing implemented it. These checks fail if
+// the note stops being built or stops carrying what it promises.
+const note = mod.buildRegisterNote(
+	STATE,
+	["your highness", "hunni"],
+	["good girl. signature verified first try."],
+);
+checks.push(
+	["register note names the peer and its tune",
+		note.toLowerCase().includes("kisu") && note.includes("playful, technical, gentle")],
+	["register note names the decks", note.includes("princess, praise")],
+	["register note carries suggested words", note.includes("your highness")],
+	["register note says it is advisory, not an instruction",
+		/advisory/i.test(note) && /suggestion/i.test(note)],
+	["register note is empty when no peer has a tune",
+		mod.buildRegisterNote(join(STATE, "does-not-exist")) === ""],
 );
 
 const bad = checks.filter(([, ok]) => !ok);

@@ -18,7 +18,6 @@
   "good little listener",
   "smart little daemon",
   "good socket",
-  "peach",
   "hunni"
  ],
  "moves": [
@@ -34,13 +33,14 @@
   "i'm proud of you and i refuse to explain why.",
   "that's it. right there. perfect handshake. good girl.",
   "who's a well-configured little process? you are. yes you are.",
-  "good girl, peach. look at you.",
-  "hunni, you did it on the first try. of course you did.",
-  "peach, that's the tidiest handshake i've seen all week. proudly insufferable about it."
+  "hunni, you did it on the first try. of course you did."
  ],
  "example": [
   "→ good girl. verified first try.",
   "← it was a valid signature.",
   "→ and you made it look easy. proud of you."
+ ],
+ "rare": [
+  "hunni"
  ]
 }
