@@ -347,3 +347,26 @@ markers. "No windows reported" and "no window exists" are then the same output, 
 detector would join its own list of absences read as facts. So the same three states
 are needed one level up: fresh writer + zero windows = none; absent writer = cannot
 answer, exit non-zero; stale writer = cannot answer.
+
+## A diagnostic line must be derived from the account that sets the status
+
+A daemon/version mismatch printed a warning and never joined the problem list, so
+`doctor` exited 0 while telling the human something was wrong. That is the same gap as
+an artifact that reached production data but not the detector: **the sentence existed,
+the consequence did not.**
+
+The rule, in a form that can be checked: build one list of findings, then derive BOTH
+the printed lines and the exit status from it. A line that was never written separately
+cannot disagree with the status. `tools/test_doctor_account.py` holds it from the
+outside — every printed warning must either move the exit code or appear in a short,
+documented NOTE allowlist (facts about *data*, not about whether what is running
+matches the disk).
+
+Two severities fall out of that, and they must stay separate:
+
+- **wrong** — what is running does not match what is on disk: repair
+- **unknown** — nothing can be compared: wait
+- **note** — true and worth saying, but not a mismatch of running code
+
+Exit codes 1, 2 and 0 respectively. Collapsing any two of them gives a script the wrong
+instruction, which is how a detector becomes something people route around.

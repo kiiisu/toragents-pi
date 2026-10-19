@@ -957,25 +957,34 @@ def cmd_doctor(a):
     up with the inbox? No harness config to parse and no hook that can fail
     silently, which is the whole reason this project is pi-only.
     """
-    problems = []
+    # ONE ACCOUNT. Every finding is an entry here first; the printed lines and the
+    # exit status are both derived from it. A diagnostic that is only printed cannot
+    # affect the code, and a diagnostic that cannot affect the code is a sentence the
+    # machine never heard -- that gap shipped once (daemon mismatch printed, exit
+    # stayed 0) and this shape makes it unrepresentable.
+    findings = []                      # {"sev": "wrong"|"unknown"|"note", "text": ...}
+    problems = findings                # kept: same object, older name in this function
     daemon_ver = _daemon_version()
     if daemon_ver != AGENT_VERSION:
-        problems.append({"label": "daemon", "state": "wrong", "why": "stale daemon"})
-        print(f"code         file={AGENT_VERSION} daemon={daemon_ver}  <- "
-              f"the daemon is running different code; restart it or the new "
-              f"features will answer as if they do not exist")
+        findings.append({"sev": "wrong", "label": "daemon", "state": "wrong",
+                         "why": "stale daemon",
+                         "text": f"code         file={AGENT_VERSION} daemon={daemon_ver}"
+                                 f"  <- the daemon is running different code; restart it "
+                                 f"or the new features will answer as if they do not exist"})
     else:
-        print(f"code         file={AGENT_VERSION} daemon={daemon_ver}  ok")
+        findings.append({"sev": "note",
+                         "text": f"code         file={AGENT_VERSION} daemon={daemon_ver}  ok"})
 
     # Per-window extension builds. A window reports the literal it was compiled
     # with, on every tick, so a stale one cannot hide and cannot lie about itself.
     windows = _window_versions(STATE)
     if windows:
-        stale = [w for w in windows if w["state"] != "ok"]
         for w in windows:
-            print(f"window       {w['label']:<16} ext={w['code']} {w['state']}"
-                  + ("" if w["state"] == "ok" else "  <- " + w["why"]))
-        problems.extend(stale)
+            findings.append({"sev": "note" if w["state"] == "ok" else "wrong",
+                             "label": w["label"], "state": w["state"], "why": w["why"],
+                             "text": f"window       {w['label']:<16} ext={w['code']} "
+                                     f"{w['state']}"
+                                     + ("" if w["state"] == "ok" else "  <- " + w["why"])})
     else:
         # Two kinds of stale, and only one of them writes a marker. A window running
         # an extension older than markLive writes NOTHING, so it is invisible here --
@@ -985,13 +994,16 @@ def cmd_doctor(a):
         # = we cannot answer, and a window may be open in front of a human.
         trust = writer_state(STATE)
         if trust == "trusted":
-            print(f"window       (no live window has reported its build; expected ext="
-                  f"{EXPECTED_EXT_VERSION})")
+            findings.append({"sev": "note",
+                             "text": f"window       (no live window has reported its "
+                                     f"build; expected ext={EXPECTED_EXT_VERSION})"})
         else:
-            print(f"window       cannot answer: presence writer is {trust}, and a window "
-                  f"running an extension older than the marker writes nothing at all "
-                  f"<- open windows may exist and be invisible")
-            problems.append({"label": "-", "state": "unknown", "why": f"writer {trust}"})
+            findings.append({"sev": "unknown", "label": "-", "state": "unknown",
+                             "why": f"writer {trust}",
+                             "text": f"window       cannot answer: presence writer is "
+                                     f"{trust}, and a window running an extension older "
+                                     f"than the marker writes nothing at all <- open "
+                                     f"windows may exist and be invisible"})
 
     home = os.path.expanduser("~")
     state = STATE
@@ -1001,14 +1013,25 @@ def cmd_doctor(a):
     # disclosure bug was found, so the accident now has a detector rather than an
     # anecdote. Reported, never deleted -- it is evidence.
     strangers, artifacts = _inbox_artifact_report(state)
+    # NOTE severity, deliberately: these are facts about DATA, not about running code.
+    # The exit code answers "is the running system consistent with the disk"; a test
+    # frame in an inbox breaks no run. They are still in the account, so the printed
+    # line and the status are derived from one list -- severity is what stops them
+    # turning a clean install red.
     if artifacts:
-        print(f"artifacts    {len(artifacts)} inbox record(s) from a malformed "
-              f"fingerprint: {', '.join(artifacts[:4])}  <- test frames that reached "
-              f"production data")
+        findings.append({"sev": "note",
+                         "text": f"artifacts    {len(artifacts)} inbox record(s) from a "
+                                 f"malformed fingerprint: {', '.join(artifacts[:4])}  <- "
+                                 f"test frames that reached production data"})
     if strangers:
-        print(f"unowned      {len(strangers)} inbox record(s) from senders not on the "
-              f"allowlist: {', '.join(strangers[:4])}  <- these are not shipped in "
-              f"digests, but they are still stored here")
+        findings.append({"sev": "note",
+                         "text": f"unowned      {len(strangers)} inbox record(s) from "
+                                 f"senders not on the allowlist: "
+                                 f"{', '.join(strangers[:4])}  <- these are not shipped "
+                                 f"in digests, but they are still stored here"})
+    for f in findings:
+        print(f["text"])
+
     # The extension resolves RECEIVE from the PI process's environment. doctor
     # usually runs in a different shell, where the same variable may be set,
     # unset, or set differently -- so its own env is NOT evidence of what the
@@ -1181,8 +1204,8 @@ def cmd_doctor(a):
     #   2  cannot answer     -> wait for a window to speak; nothing is known to be wrong
     # One code for both would make a script wait when it should repair, or repair a
     # state that is merely unknown -- the same lossy compression we removed all day.
-    wrong = [p for p in problems if p.get("state") != "unknown"]
-    unknown = [p for p in problems if p.get("state") == "unknown"]
+    wrong = [f for f in findings if f["sev"] == "wrong"]
+    unknown = [f for f in findings if f["sev"] == "unknown"]
     if wrong:
         print(f"\n{len(wrong)} KNOWN mismatch(es): something running here is not the "
               f"code on disk. /reload the window(s) marked stale, or restart the daemon.")
