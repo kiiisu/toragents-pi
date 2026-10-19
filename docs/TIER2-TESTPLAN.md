@@ -83,6 +83,33 @@ Precedence under test: `never-stored` > `mismatch` > `delivered-both` > `accepte
 
 ---
 
+## Stale state — a separate contract, a separate file
+
+`tools/test_stale.py` (9 tests: 8 fail today, 1 passes because it guards this
+file rather than the implementation). Kept apart from the acceptance file on
+purpose: tier 2 asks "does the index tell the truth about storage", staleness
+asks "does the panel tell the truth about *now*". They fail for different
+reasons and will be fixed by different code.
+
+Spec: `TIER2-DIGEST.md` "Heartbeat / staleness: schema, not prose".
+
+| test | asserts | fails if | why it matters |
+|---|---|---|---|
+| `test_the_spec_state_is_reachable_and_named` | `stale` is a member of the state vocabulary (or at least renderable), not an adjective invented at print time | no vocabulary and no stale render | A state that exists only inside a `print()` cannot be tested, counted, or asserted by any consumer. |
+| `test_a_peer_we_never_heard_from_is_stale_not_up_to_date` | a peer with no `last_digest_at` renders stale | absence renders as freshness | The whole point: never-having-heard is not evidence of agreement. |
+| `test_an_ancient_digest_is_stale` | 400 days old renders stale | old data renders current | The obvious case, kept so the next three have a baseline. |
+| `test_a_weekend_old_digest_is_stale` | 3 days old renders stale | only very old data goes stale | A 60-second constant passes "just now / 400 days" and still lies to anyone reading after a weekend. |
+| `test_a_digest_from_just_now_is_not_stale` | a fresh digest does not render stale | it warns unconditionally | A warning that always fires is not a warning. |
+| `test_an_empty_digest_counts_as_heard_from` | an accepted **empty** digest sets `last_digest_at` and clears stale | empty digests leave the peer stale | "They hold nothing" is information; "we heard nothing" is not. Conflating them makes a healthy quiet peer look dead. |
+| `test_stale_never_presents_the_old_counters_as_current` | with real counters (1190 delivered) stale, the qualification appears **in the first three lines** and the counters are still shown | staleness is a footnote under numbers that read as live | The contract is to qualify the counters, not hide them; hiding them loses the health signal §7 promises. |
+| `test_a_store_that_cannot_be_read_says_so_and_does_not_throw` | truncated `seen.json` exits 0 and prints the unavailable line | a corrupt store throws or prints numbers | §7: decoration never takes the channel down. |
+| `test_this_file_does_not_assert_a_threshold_number` | **this file** pins no threshold constant (scanned with `ast`, `Compare` nodes only) | a plausible threshold literal appears in a comparison | The spec says tests must not assert the number. The first version of this check scanned by substring and flagged its own docstring — a measurement reading the wrong surface, which is the exact defect the file is about. |
+
+Threshold discipline: this file constrains the number only from the outside — a
+digest from *now* must not be stale, and a digest from *3 days ago* must be. It
+never asserts 60, 600 or 3600. If an implementation picks a value that fails the
+3-day case, the reading experience is what broke.
+
 ## What is deliberately NOT tested here, and why
 
 - **Idle flush / zero extra dials timing** (§5, tests 11-13 of the spec's own
