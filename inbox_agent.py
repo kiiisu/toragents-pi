@@ -859,6 +859,46 @@ def _is_test_label(label):
     return bool(label) and (label in TEST_LABELS or label.startswith("test-"))
 
 
+def _window_versions(state_dir):
+    """Each live window's self-reported extension build, from what it wrote itself."""
+    d = os.path.join(state_dir, "live")
+    out = []
+    if not os.path.isdir(d):
+        return out
+    now = time.time()
+    for name in sorted(os.listdir(d)):
+        if not name.endswith(".json") or name.startswith("_"):
+            continue
+        try:
+            with open(os.path.join(d, name)) as f:
+                rec = json.load(f)
+        except (OSError, ValueError):
+            continue
+        pid = rec.get("pid")
+        alive = False
+        if isinstance(pid, int) and pid > 0:
+            try:
+                os.kill(pid, 0)
+                alive = True
+            except OSError:
+                alive = False
+        age = (now * 1000.0 - float(rec.get("at") or 0)) / 1000.0
+        if not alive or age >= (LIVE_STALE_MS / 1000.0):
+            continue                      # a dead window's build is not a claim
+        code = str(rec.get("code") or "")
+        if not code:
+            out.append({"label": name[:-5], "code": "pre-version", "state": "stale",
+                        "why": "does not report its build: a window that cannot say "
+                               "which code it loaded cannot be trusted to run the new one"})
+        elif code != EXPECTED_EXT_VERSION:
+            out.append({"label": name[:-5], "code": code, "state": "stale",
+                        "why": f"running a module from before ext {EXPECTED_EXT_VERSION}; "
+                               f"/reload this window"})
+        else:
+            out.append({"label": name[:-5], "code": code, "state": "ok", "why": ""})
+    return out
+
+
 def _inbox_artifact_report(state_dir):
     """Fingerprints in the inbox that no real sender could have produced.
 
@@ -924,6 +964,20 @@ def cmd_doctor(a):
               f"features will answer as if they do not exist")
     else:
         print(f"code         file={AGENT_VERSION} daemon={daemon_ver}  ok")
+
+    # Per-window extension builds. A window reports the literal it was compiled
+    # with, on every tick, so a stale one cannot hide and cannot lie about itself.
+    problems = []
+    windows = _window_versions(STATE)
+    if windows:
+        stale = [w for w in windows if w["state"] != "ok"]
+        for w in windows:
+            print(f"window       {w['label']:<16} ext={w['code']} {w['state']}"
+                  + ("" if w["state"] == "ok" else "  <- " + w["why"]))
+        problems.extend(stale)
+    else:
+        print(f"window       (no live window has reported its build; expected ext="
+              f"{EXPECTED_EXT_VERSION})")
 
     home = os.path.expanduser("~")
     state = STATE
@@ -1107,6 +1161,13 @@ def cmd_doctor(a):
             state_word = "PENDING"
         print(f"  {mid:14} {state_word:12} to={to_sess or '-':18} "
               f"from={m.get('from_label') or m.get('from') or '?'}")
+    if problems:
+        # The exit code IS the check: a human reads output, a script or another agent
+        # reads the status. A mismatch that only prints is one somebody scrolls past.
+        print(f"\n{len(problems)} version mismatch(es): something running here is not "
+              f"the code on disk. /reload the window(s) marked stale, or restart the "
+              f"daemon.")
+        return 1
     return 0
 
 
@@ -1743,6 +1804,15 @@ def live_labels(state_dir):
 
 WRITER_FILE = "_writer.json"
 
+# The build of the EXTENSION this code expects. Must equal EXT_VERSION in
+# toragents_watch.ts; tools/test_ext_version.py fails if they drift.
+#
+# Why a separate number at all: `code file= daemon=` compares two halves of the
+# RECEIVER, and both of them run on this box. A pi window loads its module at start
+# and is invisible to that comparison -- so a stale window passes every check we had
+# while running old delivery logic. That is the trap this number exists to expose.
+EXPECTED_EXT_VERSION = "3"
+
 
 def writer_state(state_dir):
     """Can this box's presence registry be trusted to answer?
@@ -2217,7 +2287,11 @@ def main():
             a.text = list(a.text) + list(extra)
         else:
             ap.error(f"unrecognized arguments: {' '.join(extra)}")
-    a.fn(a)
+    # The status is part of the output: a mismatch that only prints is one somebody
+    # scrolls past, and a script or another agent reads the code, not the prose.
+    rc = a.fn(a)
+    if isinstance(rc, int):
+        sys.exit(rc)
 
 
 if __name__ == "__main__":

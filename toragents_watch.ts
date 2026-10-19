@@ -673,18 +673,33 @@ function scanInbox(): {
  * and an unnamed session does not take it -- otherwise a polling session steals
  * mail addressed to another one before it can look.
  */
+/**
+ * The build of THIS LOADED MODULE, as a literal.
+ *
+ * Not read from disk, and that is the whole design: a window that read its own
+ * source at tick time would report the NEW version while running the OLD code --
+ * attesting to precisely the thing it cannot see. The only honest statement a stale
+ * process can make about itself is what it was compiled with. Bump this whenever the
+ * file changes; tools/test_ext_version.py fails if you forget.
+ */
+export const EXT_VERSION = "3";
+
 export function markLive(stateDir: string, label: string, pid: number, now = Date.now()): void {
 	if (!label) return;
 	try {
 		const dir = join(stateDir, "live");
 		mkdirSync(dir, { recursive: true });
-		writeFileSync(join(dir, `${label}.json`), JSON.stringify({ session: label, pid, at: now }));
+		// `code` rides every tick, not just at start, so a window that reloads into a
+		// new build corrects itself on the next tick without touching the daemon.
+		writeFileSync(join(dir, `${label}.json`),
+			JSON.stringify({ session: label, pid, at: now, code: EXT_VERSION }));
 		// The heartbeat MARKER: proof that a writer exists at all. Without it an empty
 		// registry is ambiguous -- "no windows here" and "nobody writes presence" look
 		// identical -- and the daemon would have to choose between refusing targeted
 		// mail (losing messages on an old peer) and accepting it blindly. The marker
 		// lets it trust an empty registry only when a fresh writer vouches for it.
-		writeFileSync(join(dir, "_writer.json"), JSON.stringify({ v: 2, session: label, pid, at: now }));
+		writeFileSync(join(dir, "_writer.json"),
+			JSON.stringify({ v: 2, session: label, pid, at: now, code: EXT_VERSION }));
 	} catch {
 		/* presence is an optimisation for the sender, never a delivery blocker here */
 	}

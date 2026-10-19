@@ -267,11 +267,19 @@ a file, pass the path.
 | `inbox dg show` | delivery provenance per message, with staleness named |
 | `inbox chat --follow` | full-width transcript in a terminal pane |
 
-Three things in `doctor` are worth reading rather than skimming: the **state
+Four things in `doctor` are worth reading rather than skimming: the **state
 directory** it resolved (if two windows disagree, you have two inboxes), the
-**code** line (`file=` vs `daemon=` — a daemon can be running older code than the
-file on disk, and the newest features will then answer as if they do not exist),
-and the **receiving half** check.
+**code** line (`file=` vs `daemon=`), the **window** lines (`ext=`), and the
+**receiving half** check.
+
+`code` compares the two halves of the receiver, and a running daemon can be older
+than the file on disk. `window` catches the thing `code` cannot: a pi window loads
+its extension at start, so an edited file is invisible to it until `/reload`. Each
+window writes the version **literal** it was compiled with -- never a value read
+from disk, which a stale window would happily report as current.
+
+**`doctor` exits non-zero on any mismatch.** A human reads the output; a script or
+another agent reads the status code.
 
 Inside pi: `/toragents-status` (including failed messages),
 `/toragents-retry`, `/toragents-mute`, `/toragents-unmute`, `/toragents-chat`
