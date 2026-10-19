@@ -81,26 +81,29 @@ class Presence(unittest.TestCase):
         self.assertTrue(live.get("pi-window-a"), "the addressed label is live: accept")
         self.assertFalse(live.get("pi-window-c"), "an unaddressed unknown label must be refused")
 
-    # 4b. the window half, stated as a gap instead of faked
-    def test_the_second_windows_silence_is_NOT_YET_COVERED(self):
-        """The extension decides silence via addressedToMe, which is not exported.
+    # 4b. the window half moved to where it can be asserted as a rule
+    def test_the_second_windows_silence_is_covered_by_the_addressing_rule(self):
+        """The window filter is now a named rule with its own mutations.
 
-        Whatever this file counted as coverage would be a lie: a message stored
-        with to_session="pi-window-a" is filtered out by every other window at
-        delivery time, and that filter is one un-exported function. Until it is
-        exported (or a two-window harness drives real sessions), the user's
-        original complaint -- "messages arrive in BOTH windows" -- is reasoned
-        about, not tested. This test documents the gap so the count cannot be
-        read as coverage.
+        This test used to assert that `addressedToMe` was still un-exported, so
+        the coverage gap could not be read as coverage. The gap is closed by
+        tools/test_addressing.ts, which drives the rule and mutates it twice
+        (drop the owner check -> duplicate delivery returns; make addressing
+        owner-only -> delivered-to-nobody returns). Keeping a companion check
+        here, rather than deleting the slot, means the day that file disappears
+        the silence stops being covered and this suite says so.
+
+        A test that fails when coverage arrives is worth more than one that
+        passes because nobody looked -- and a test that fails when coverage
+        LEAVES is the same instinct pointed at the other direction.
         """
-        src = open(os.path.join(os.path.dirname(os.path.dirname(
-            os.path.abspath(__file__))), "toragents_watch.ts"), encoding="utf-8").read()
-        exported = any(line.strip().startswith("export function addressedToMe")
-                       for line in src.splitlines())
-        self.assertFalse(
-            exported,
-            "addressedToMe is now exported: replace this gap test with a real "
-            "two-window test that asserts the second window receives nothing")
+        ts = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                          "tools", "test_addressing.ts")
+        self.assertTrue(
+            os.path.exists(ts),
+            "tools/test_addressing.ts is gone: the second window's silence is no "
+            "longer covered by a named rule, and test_presence.py alone cannot "
+            "cover it (it only knows which labels are live, not who renders what)")
 
 
 if __name__ == "__main__":
