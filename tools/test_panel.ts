@@ -117,10 +117,15 @@ delete process.env.TORAGENTS_PANEL;
 
 const { readThread, threadSignature, tldr } = await import("../_lib/toragents-transcript.ts");
 const { SideColumn } = await import("../_lib/toragents-side-column.ts");
-const { renderColumn, renderStrip, subject } = await import("../toragents-panel.ts");
+const { PANEL_VERSION, renderColumn, renderStrip, subject } = await import("../toragents-panel.ts");
 const { POLICY_DEFAULTS, isReceiver, panelMode, policyPath, readPolicy } = await import("../_lib/toragents-policy.ts");
 
 const theme = { fg: (_c: string, s: string) => s, bold: (s: string) => s };
+
+// The reader's self-declared version, pinned the way EXT_VERSION is: a change to how
+// the pane behaves must arrive with a bump, or a window loaded before it will keep
+// rendering the old shape and look healthy. Change this pair together, deliberately.
+ok(PANEL_VERSION === 1, `the reader is panel v1 (found v${PANEL_VERSION}) — bump both sides together`);
 
 // ── 1. the transcript merge ────────────────────────────────────────────────
 const rows = readThread();

@@ -54,6 +54,21 @@ import {
 	writeSnapshot,
 } from "./_lib/toragents-transcript.ts";
 
+/**
+ * Which reader is this window running?
+ *
+ * The delivery half already refuses to call two windows compatible when their code
+ * differs (EXT_VERSION): two windows running different code while both look fine is
+ * how a stale one keeps lying quietly. The reader had no such number, and it showed
+ * — a window started before the policy layer existed kept its old pane and had no
+ * way to say so. Bump this whenever behaviour changes in a way a running window
+ * would not otherwise notice, and bump `PANEL_VERSION` in tools/test_panel.ts with it.
+ *
+ * Self-declared for now, and reported when the pane mounts. It is not yet consumed
+ * by doctor; when it is, it should come from here rather than from a second copy.
+ */
+export const PANEL_VERSION = 1;
+
 const WIDTH_DEFAULT = 46;
 const MIN_TERMINAL = 110;
 const POLL_MS = 1500;
@@ -625,7 +640,7 @@ export default function (pi: ExtensionAPI) {
 			},
 			{ placement: "belowEditor" },
 		);
-		return { ok: true, why: `bottom strip (${stripLines()} lines)` };
+		return { ok: true, why: `bottom strip, ${stripLines()} lines (panel v${PANEL_VERSION})` };
 	};
 
 	const unmountStrip = (ctx?: ExtensionContext): string => {

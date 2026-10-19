@@ -456,6 +456,11 @@ and restores width, render hook and wheel routing on dispose. That is why the
 panel test asserts the restore — a pane that does not un-narrow leaves pi
 permanently squeezed.
 
+The reader declares `PANEL_VERSION` and reports it when the pane mounts, pinned in
+`tools/test_panel.ts` the way `EXT_VERSION` is pinned for the delivery half. Two
+windows running different reader code look equally healthy from the outside; the
+number exists so "it looks the same" is not the only evidence.
+
 The subject line is derived, not stored: sentences are scored for technical signal
 (identifiers, shas, paths, `§`refs, figures), so the subject is the line carrying
 the commit id rather than the polite opening, and the sentence that became the

@@ -48,5 +48,9 @@ if ! command -v bun >/dev/null 2>&1; then
 	exit 0
 fi
 
+# `exec` on purpose, and it must stay that way: this line REPLACES the shell, so the
+# test's exit status is the wrapper's. Any `|| exit 0`, `|| true`, `set +e` or trap
+# added around it would turn a real failure into a pass, which is worse than not
+# having a wrapper at all. Every SKIP above happens before the test runs.
 cd "$ROOT"
 NODE_PATH="$NM" exec bun tools/test_panel.ts
