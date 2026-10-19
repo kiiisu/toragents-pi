@@ -189,6 +189,7 @@ def main():
         (f"EXPERIMENT-B-{stamp}", a.label_b),
         (f"EXPERIMENT-CONTROL-{stamp}", None),
     ]
+    receipts = []
     for body, target in plan:
         s = socket.create_connection(("127.0.0.1", ia.LISTEN_PORT), timeout=15)
         try:
@@ -205,6 +206,7 @@ def main():
         finally:
             s.close()
         where = target or "UNTARGETED"
+        receipts.append(reply)
         print(f"send -> {where}: {reply}")
 
     after = numbers("after")
@@ -235,6 +237,27 @@ def main():
             print("  the stream SPLIT across windows -> ownership drift (d)", end="")
             print(" = two windows taking turns, each message delivered exactly once")
     print("  interpretation must carry (d): a split stream is not two state dirs")
+
+    # The mapping's precondition, asserted rather than assumed: claims persist after
+    # delivery (success never unclaims; the claim is the durable "who owns this").
+    # If a message lands without a claim, that is a FINDING about the build, not a
+    # mapping bug -- and it must not be reported as "not delivered".
+    ok_sends = sum(1 for r in receipts if isinstance(r, dict) and r.get("ok"))
+    new_claims = {k: v for k, v in claims_after.items() if k not in claims_before}
+    print("\nCLAIM INTEGRITY (the mapping depends on this)")
+    print(f"  accepted sends: {ok_sends}   new claim files: {len(new_claims)}   "
+          f"total claims: {len(claims_before)} -> {len(claims_after)}")
+    empty = [k for k, v in new_claims.items() if not str(v).strip()]
+    if empty:
+        print(f"  FINDING: {len(empty)} claim file(s) with no session field: {empty[:4]}")
+    if ok_sends != len(new_claims):
+        print(f"  FINDING: {ok_sends} accepted send(s) but {len(new_claims)} new claim(s).")
+        print("  Either a build that UNCLAIMS on success, or a delivery with no claim.")
+        print("  Claims are the durable ownership record by design; a delivered message")
+        print("  without one cannot be attributed, and must be reported as UNKNOWN")
+        print("  ownership -- never as 'not delivered'.")
+    else:
+        print("  consistent: every accepted send produced exactly one durable claim")
     return 0
 
 
