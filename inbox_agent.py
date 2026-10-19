@@ -842,6 +842,40 @@ def _daemon_version():
         return f"unreachable ({e.__class__.__name__})"
 
 
+def _inbox_artifact_report(state_dir):
+    """Fingerprints in the inbox that no real sender could have produced.
+
+    Returns (strangers, artifacts): senders not on the allowlist, and records whose
+    from_fingerprint is not 32 hex characters at all. Both are reported, neither is
+    removed -- a synthetic frame in a live inbox is evidence about how it got there.
+    """
+    import re
+    hex32 = re.compile(r"^[0-9a-f]{32}$")
+    known = set(peers())
+    strangers, artifacts = [], []
+    d = os.path.join(state_dir, "inbox")
+    if not os.path.isdir(d):
+        return strangers, artifacts
+    for name in os.listdir(d):
+        if not name.endswith(".json"):
+            continue
+        try:
+            with open(os.path.join(d, name)) as f:
+                r = json.load(f)
+        except (OSError, ValueError):
+            continue
+        fp = r.get("from_fingerprint") or ""
+        mid = r.get("id") or name[:-5]
+        # All-zero and uniform fingerprints are well-formed hex but cannot be a
+        # sender: nacl never produces one, and a test frame named "deadbeefcafe"
+        # produced exactly this shape on a live box.
+        if not hex32.match(fp) or len(set(fp)) <= 1:
+            artifacts.append(f"{mid}({fp[:12] or 'empty'})")
+        elif fp not in known:
+            strangers.append(f"{mid}({fp[:12]})")
+    return sorted(strangers), sorted(artifacts)
+
+
 def cmd_doctor(a):
     """Answer "is the receiving half wired up on THIS machine?" -- measured.
 
@@ -861,6 +895,19 @@ def cmd_doctor(a):
     home = os.path.expanduser("~")
     state = STATE
     inbox = os.path.join(state, "inbox")
+    # A synthetic frame in a live inbox is also a live id nobody owns. That happened:
+    # a test message reached the daemon and rode out in every digest until the
+    # disclosure bug was found, so the accident now has a detector rather than an
+    # anecdote. Reported, never deleted -- it is evidence.
+    strangers, artifacts = _inbox_artifact_report(state)
+    if artifacts:
+        print(f"artifacts    {len(artifacts)} inbox record(s) from a malformed "
+              f"fingerprint: {', '.join(artifacts[:4])}  <- test frames that reached "
+              f"production data")
+    if strangers:
+        print(f"unowned      {len(strangers)} inbox record(s) from senders not on the "
+              f"allowlist: {', '.join(strangers[:4])}  <- these are not shipped in "
+              f"digests, but they are still stored here")
     # The extension resolves RECEIVE from the PI process's environment. doctor
     # usually runs in a different shell, where the same variable may be set,
     # unset, or set differently -- so its own env is NOT evidence of what the
@@ -1866,12 +1913,12 @@ def dg_apply(state_dir, fp, dg):
             # their store.
             jd = _journal_dirs(state_dir, mid)
             if "out" in jd:
-                row["why"] = ("could not anchor this id: our sent store has no record, "
-                              "but the journal shows we sent it (our store gap)")
+                row["why"] = ("could not anchor this id: the journal shows a send for "
+                              "it, but our sent store has no record (our store gap)")
                 row["cause"] = "store-gap"
             else:
-                row["why"] = ("could not anchor this id: no local record here at all "
-                              "(never minted here, or no longer held)")
+                row["why"] = ("could not anchor this id: no local record of it here -- "
+                              "it may predate our store, or belong to another conversation")
                 row["cause"] = "unanchorable"
         row["announced"] = False
         rows[mid] = row

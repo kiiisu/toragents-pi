@@ -156,7 +156,13 @@ class Wording(unittest.TestCase):
         self.assertEqual(row.get("state"), "never-stored")
         self.assertEqual(row.get("cause"), "store-gap",
                          f"our own gap was reported as an unanchorable/foreign id: {row}")
-        self.assertIn("our", str(row.get("why")), f"the sentence must own it: {row}")
+        self.assertIn("our sent store", str(row.get("why")), f"the sentence must own it: {row}")
+        # The sentence is about the RECORD, never the body: chat.jsonl truncates at
+        # 2000 bytes, so dir="out" proves an attempt existed, not that a body was
+        # stored or matched. "we sent this body" would be a claim the journal cannot
+        # support.
+        self.assertNotIn("we sent", str(row.get("why")).lower(),
+                         f"the why claims the journal proves content: {row}")
 
 
 if __name__ == "__main__":
