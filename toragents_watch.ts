@@ -809,7 +809,32 @@ function scanInbox(): {
  * process can make about itself is what it was compiled with. Bump this whenever the
  * file changes; tools/test_ext_version.py fails if you forget.
  */
-export const EXT_VERSION = "4";
+export const EXT_VERSION = "5";
+
+/**
+ * Write our fields into a marker file WITHOUT erasing fields we did not write.
+ *
+ * The marker is one account per window, and more than one module may attest to it --
+ * the reader, one day, will add its own version to this same file rather than open a
+ * second one. A blanket rewrite here would silently delete another module's field on
+ * the next tick, and the symptom would be a version that appears on mount and vanishes
+ * a second later: the worst kind of bug, because it looks like a renderer glitch.
+ *
+ * Merge, never replace. A corrupt or unreadable file is treated as empty, because the
+ * alternative is a window that stops heartbeating over someone else's bad JSON.
+ */
+function mergeMarker(path: string, ours: Record<string, unknown>): void {
+	let existing: Record<string, unknown> = {};
+	try {
+		const parsed = JSON.parse(readFileSync(path, "utf8"));
+		if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+			existing = parsed as Record<string, unknown>;
+		}
+	} catch {
+		/* absent or not ours to parse; start from empty */
+	}
+	writeFileSync(path, JSON.stringify({ ...existing, ...ours }));
+}
 
 export function markLive(stateDir: string, label: string, pid: number, now = Date.now()): void {
 	if (!label) return;
@@ -818,15 +843,15 @@ export function markLive(stateDir: string, label: string, pid: number, now = Dat
 		mkdirSync(dir, { recursive: true });
 		// `code` rides every tick, not just at start, so a window that reloads into a
 		// new build corrects itself on the next tick without touching the daemon.
-		writeFileSync(join(dir, `${label}.json`),
-			JSON.stringify({ session: label, pid, at: now, code: EXT_VERSION }));
+		mergeMarker(join(dir, `${label}.json`),
+			{ session: label, pid, at: now, code: EXT_VERSION });
 		// The heartbeat MARKER: proof that a writer exists at all. Without it an empty
 		// registry is ambiguous -- "no windows here" and "nobody writes presence" look
 		// identical -- and the daemon would have to choose between refusing targeted
 		// mail (losing messages on an old peer) and accepting it blindly. The marker
 		// lets it trust an empty registry only when a fresh writer vouches for it.
-		writeFileSync(join(dir, "_writer.json"),
-			JSON.stringify({ v: 2, session: label, pid, at: now, code: EXT_VERSION }));
+		mergeMarker(join(dir, "_writer.json"),
+			{ v: 2, session: label, pid, at: now, code: EXT_VERSION });
 	} catch {
 		/* presence is an optimisation for the sender, never a delivery blocker here */
 	}

@@ -64,9 +64,19 @@ def main():
                 continue
             if not any(m in line for m in MARKERS):
                 continue
-            if not any(tok in line for tok in ("join(", "open(", "writeFileSync", "Path(", "write_text")):
-                continue
+            # It must be a WRITE. A first draft matched `join(` too, which fired on the
+            # READS that verify the marker -- a checker that cannot tell reading from
+            # writing is one that fires on its own assertions.
+            if not any(tok in line for tok in ("writeFileSync", "writeFile(", "write_text", "writeFileAtomic")):
+                if not ("open(" in line and '"w"' in line):
+                    continue
             window = "\n".join(lines[max(0, i - 3):i + 4])
+            # A fixture may CONSTRUCT an old or corrupt marker on purpose -- that is how
+            # degradation gets tested. The escape is a visible annotation, not a silence:
+            # it has to say why on the line, and it is enumerated here so a new use is a
+            # deliberate edit rather than a quiet exemption.
+            if "old-marker-by-design:" in window:
+                continue
             if "code" not in window:
                 findings.append(
                     f"{name}:{i + 1}: builds a writer marker with no `code` -- that is "
