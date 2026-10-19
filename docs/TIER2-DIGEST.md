@@ -298,3 +298,32 @@ worlds in the same coat. Order of tests, and it matters:
    correct wall clocks with wrong mechanisms — a warm cached descriptor hammers
    dead intro points and reports timeouts at the same second a cold client
    reports descriptor-not-found.
+
+## Decisions settled while writing the acceptance tests
+
+Recorded because each had tests hanging off it and none of them was written down.
+
+**D1 — the 64 KiB cap is defence in depth, not a live bound.** Measured: the
+largest schema-valid digest is 64,597 bytes (512 items x 125 bytes, plus
+signature), which is 939 bytes *under* the 65,536 cap. So the byte ceiling can
+only fire on input the schema already rejects. The bound that actually bites is
+the **item count (512)**. Consequences: keep the byte check as a second line,
+never lower it "by eye", and never raise the item count without redoing this
+arithmetic. The pinned test asserts the largest legal digest is *accepted*,
+which is what catches an implementer who sets a cap by feel.
+
+**D2 — unknown keys inside `dg` are REFUSED, not ignored.** §5.1 makes unknown
+keys inert on the send *envelope*; `dg` is a different object. A digest is
+parsed by us alone and its contents are written into our own state file, so an
+open schema is attacker-controlled storage inside our own storage. Strict parse,
+error names the offending key.
+
+**D3 — a fabricated entry for an id we never minted is `never-stored`, not
+`mismatch`.** The peer's argument is better than my brief: "mismatch" implies we
+held something to mismatch against, which softens a lie into an error. Precedence
+is pinned by test: `never-stored` outranks `mismatch`. This still satisfies the
+acceptance criterion, which only forbids rendering as delivered.
+
+**Correction to an earlier brief:** the hash field is exactly 32 lowercase hex
+(128-bit), not "<= 8 bytes". Any implementation following that sentence would
+have been wrong; the spec was right, the brief was stale.
