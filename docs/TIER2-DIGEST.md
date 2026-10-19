@@ -222,7 +222,21 @@ anything above that contradicts them.
 
 ## Acceptance criterion
 
-**A digest must not be able to claim an id the peer never stored.**
+**Invariant: a digest must never be able to claim an id the peer never stored.**
+
+That is the invariant, not a state. Which state a violation lands in is decided
+by the §4 predicate table and nowhere else:
+
+| situation | state |
+|---|---|
+| id we never minted, claimed by peer | `never-stored` |
+| id we hold, arriving with a different hash | `mismatch` (id-reuse) |
+
+Two rows, not two readings of one sentence. This matters because the earlier
+verbal brief said "mismatch" for the first row, which was imprecise: labelling a
+fabrication "mismatch" implies we held something to mismatch against, and that
+softens a lie into an error. The table is the authority; this paragraph only
+names the invariant the table enforces.
 
 The test that settles it: peer A fabricates a digest entry for an id that peer B
 never wrote, B's reconciler must not render it as delivered, and B's log must show
@@ -312,11 +326,18 @@ never lower it "by eye", and never raise the item count without redoing this
 arithmetic. The pinned test asserts the largest legal digest is *accepted*,
 which is what catches an implementer who sets a cap by feel.
 
-**D2 — unknown keys inside `dg` are REFUSED, not ignored.** §5.1 makes unknown
-keys inert on the send *envelope*; `dg` is a different object. A digest is
-parsed by us alone and its contents are written into our own state file, so an
-open schema is attacker-controlled storage inside our own storage. Strict parse,
-error names the offending key.
+**D2 — unknown keys inside `dg` are REFUSED, not ignored. Read this beside
+§5.1, not instead of it — the two rules are deliberately opposite and someone
+will eventually try to harmonise them into a hole.**
+
+| object | unknown keys | why |
+|---|---|---|
+| send envelope (§5.1) | **inert** | forward compatibility: an old sender must keep working against a new receiver |
+| `digest` op payload | **refused** | `digest` is a new op with no legacy senders, so strictness costs nothing, and an open schema is attacker-controlled keys landing in our own `seen.json` |
+
+The asymmetry is the design. If the rules are ever made the same "for
+consistency", one of two things breaks: either old senders stop working, or a
+peer gains write access to the shape of our local state.
 
 **D3 — a fabricated entry for an id we never minted is `never-stored`, not
 `mismatch`.** The peer's argument is better than my brief: "mismatch" implies we
