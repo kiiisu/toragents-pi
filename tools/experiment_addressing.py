@@ -105,13 +105,23 @@ def main():
             print(f"removed temp peer {fp[:12]}")
         return 0
 
+    # Order matters and is now asserted, not assumed: the gate runs BEFORE the
+    # temp identity is allowlisted, so a voided run leaves the allowlist exactly
+    # as it found it. The counts are printed either way so residue cannot hide.
+    before_peers = len(ia.peers())
+    print(f"allowlist: {before_peers} peer(s) before")
     if not live_gate([a.label_a, a.label_b]):
+        after_peers = len(ia.peers())
+        print(f"allowlist: {after_peers} peer(s) after (nothing sent, nothing added)")
+        if after_peers != before_peers:
+            print("  WARNING: the allowlist changed on a VOID run -- investigate before trusting any run")
         return 3
 
     subprocess.run([sys.executable, ia.__file__, "add-peer", fp,
                     "--onion", a.onion, "--label", "experiment"],
                    check=True, capture_output=True, text=True)
     print(f"temp peer {fp[:12]} allowlisted (remove with --cleanup)")
+    print(f"allowlist: {len(ia.peers())} peer(s) after adding the temp identity")
 
     before = numbers("before")
     stamp = int(time.time())
