@@ -13,6 +13,12 @@ sends three messages over the real framed protocol: one addressed to each sessio
 label, one untargeted control. No Tor -- the daemon is the real receiver, and the
 wire is the real wire. It prints receipts and leaves the rows for inspection.
 
+A SINGLE OBSERVATION IS NOT REPRODUCIBLE, so pass/fail does not sit on it. Ownership
+drift is a race: asserting "message X went to window A" would fail on an equally
+correct rerun. The stable assertion is the LEDGER'S DISTRIBUTION -- which session
+labels appear in claimed/ and how many messages each owns. The per-message mapping
+below is a DESCRIPTION of one run, useful for reading it, useless as a verdict.
+
 PRE-REGISTERED (written before any run, so the result cannot be reinterpreted):
 
   addressed window   -> a dir=in chat.jsonl row carrying to_session=<its label>
@@ -230,12 +236,15 @@ def main():
         for body, who in winners:
             print(f"  {body.split('-')[1]:<9} -> {who}   (addressed to {dict(plan)[body] or 'anyone'})")
         distinct = sorted(set(labels))
-        print(f"  distinct winners: {distinct}")
+        dist = {d: labels.count(d) for d in distinct}
+        print(f"  DISTRIBUTION: {dist}   distinct claimers: {len(distinct)}")
+        print("  (per-message rows above describe THIS run only; a rerun may differ)")
         if len(distinct) == 1:
-            print("  one owner for all three -> the election held here (this box runs main)")
+            print("  VERDICT: one claimer for every message -> the election is holding")
         else:
-            print("  the stream SPLIT across windows -> ownership drift (d)", end="")
-            print(" = two windows taking turns, each message delivered exactly once")
+            print("  VERDICT: the stream SPLIT across windows -> ownership drift (d):")
+            print("           two windows taking turns, each message delivered exactly once.")
+            print("           On a build WITH the election this would be a finding about main.")
     print("  interpretation must carry (d): a split stream is not two state dirs")
 
     # The mapping's precondition, asserted rather than assumed: claims persist after

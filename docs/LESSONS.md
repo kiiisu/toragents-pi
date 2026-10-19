@@ -269,3 +269,36 @@ and how, or the next agent re-runs the same attractive mistake.
 Her timeout classifier checked the proxy branch first and labelled eight-second
 timeouts "proxy-error" — correct wall clock, wrong class, and the class is the
 thing that tells you which mechanism you are looking at.
+
+## Evidence you can delete by accident
+
+The claim directory (`state/claimed/<id>`, first field = the session label that won
+the message) survives delivery **on purpose**: success never unclaims. The claim is
+the durable record of *who owns this message*, and `announced.json` is the "it was
+delivered" mirror. Treating `claimed/` as a queue to drain looks like hygiene and is
+the opposite: the split between two windows becomes invisible the moment each message
+succeeds, so the tidier the cleanup, the blinder the system.
+
+This is a general shape, not a toragents quirk. Ask of any "obvious" cleanup: **what
+question would this file have answered tomorrow?** An optimisation that removes the
+evidence of a defect is not neutral — it converts an observed bug into an
+unobservable one, and it does so exactly when things start working, which is when
+nobody is looking.
+
+Same rule as the digest's `never-stored` rows: absence of an anchor is *"we cannot
+know"*, never *"the peer fabricated it"*. Refusing to render unknown as an accusation
+is the difference between a system that reports its uncertainty and one that
+manufactures confidence.
+
+## A single observation is not a verdict when the thing observed is a race
+
+Two windows, one mailbox, one consumer election: the assertion "message X went to
+window A" passes on one run and fails on an equally correct rerun. Assertions must
+live on something stable — here, the **distribution** of claims by owner (one
+distinct claimer = the election holding; more than one = ownership drift). Per-message
+detail is still worth recording, but as a *description of this run*, never as
+evidence that the mechanism works.
+
+Generalise: before asserting on an outcome, ask whether a correct system could
+produce a different one. If yes, the assertion belongs on the distribution, the
+invariant, or the accounting identity — never on the individual event.

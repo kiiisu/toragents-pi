@@ -372,3 +372,22 @@ Required, as schema:
 - Tests assert the shape (the state exists, absence produces it, no
   last-known-as-live path) and never the number. A test that pins 60s as truth
   will pass while the panel lies to anyone who reads it after a weekend.
+
+## First cross-machine observation (2026-10-19)
+
+The digest reconciled on **two independent installs**, not loopback:
+
+```
+digest 81e66a1449a4   rows 76   stored 34   delivered-both=56   never-stored=20
+```
+
+56 rows matched in both directions, including two sends made that same hour. Earlier
+that day the same query returned 0 of 7 and 0 of 15 — every row `never-stored` while
+both sides held the bytes, which is what the a/b-side bug looked like from outside.
+
+The 20 remaining are almost certainly ids predating either store: sends whose
+`peer_id` was never recorded, so no anchor can exist on either side. That state is
+**"we cannot know"**. It must not render as "the peer never stored it", and it
+certainly must not render as fabrication — turning an absent anchor into an
+accusation is rebuilding the original lie one layer down. If any of those 20 turn out
+recent, the missing records are our bug, not the peer's.
