@@ -101,6 +101,34 @@ Precedence under test: `never-stored` > `mismatch` > `delivered-both` > `accepte
   Every test here observes either the old wire (which exists) or the absence of
   the new API (which is the finding).
 
+## Spec gaps found while writing this, and how they were settled
+
+Both were raised with the spec's author and with the peer, and both now have a
+decision rather than a hole in it. The decisions are recorded here because the
+tests encode them; `TIER2-DIGEST.md` is the author's to amend.
+
+### Settled: unknown keys inside `dg` are REFUSED
+
+Not inconsistent with §5.1's "unknown keys are inert" — the two rules govern
+different objects. On the `send` envelope, inertness is where forward
+compatibility lives, because an old sender must keep working against a new
+receiver. `digest` is a new op with no legacy senders, so strictness costs
+nothing there and buys something concrete: an open schema inside `dg` is
+attacker-controlled keys landing in our own `seen.json`.
+
+The two rules must be stated **side by side** in the spec, or someone will
+"harmonise" them and open the hole.
+
+### Settled: "not delivered" is the invariant, not a state
+
+A fabricated entry is `never-stored` (an id we never minted and never received);
+id-reuse on an id we *do* hold is `mismatch`. Those are two rows in §4's table,
+not two readings of one sentence. The acceptance criterion should state the
+**invariant** — a digest must not be able to claim an id the peer never stored —
+and point at the table for the resulting state. The earlier verbal "mismatch"
+brief was imprecise, not a competing design, and the tests following the table
+are correct.
+
 ## Spec gaps found while writing this
 
 1. **The 64 KiB cap cannot be reached by a schema-valid digest** (max measured

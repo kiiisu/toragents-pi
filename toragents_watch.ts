@@ -807,8 +807,14 @@ export default function (pi: ExtensionAPI) {
 					{ placement: "belowEditor" },
 				);
 			} else {
-				// RPC/json/print: component factories are ignored there, so keep
-				// the string form or the pane disappears on those surfaces.
+				// RPC/json/print: keep the array form. This branch is load-bearing and
+				// the failure mode is silence, which is why it must not be "simplified"
+				// into the factory above. Verified in pi's bundle: rpc-mode.js emits
+				// `output(...)` only when `content === void 0 || Array.isArray(content)`.
+				// Pass a function there and the guard is false, the && short-circuits,
+				// and NOTHING is emitted -- no widget, no error, no note, and no test
+				// would fail. (RPC does send the whole array and applies no row cap;
+				// MAX_WIDGET_LINES = 10 lives only in the TUI renderer.)
 				c.ui.setWidget("toragents-chat", renderChat(72), { placement: "belowEditor" });
 			}
 		} catch {

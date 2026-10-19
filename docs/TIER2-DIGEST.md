@@ -327,3 +327,27 @@ acceptance criterion, which only forbids rendering as delivered.
 **Correction to an earlier brief:** the hash field is exactly 32 lowercase hex
 (128-bit), not "<= 8 bytes". Any implementation following that sentence would
 have been wrong; the spec was right, the brief was stale.
+
+## Heartbeat / staleness: schema, not prose
+
+The principle is already stated twice above ("zero rows means unknown, never
+negative"; "a missing entry is unknown, never never-stored"). What is missing is
+**shape**: `state/seen.json` has no last-write field, so a renderer has nothing
+to read that would let it say "stale", and §7's panel contract has no stale state
+to render.
+
+Required, as schema:
+
+- `seen.json` carries `last_digest_at` (epoch seconds) per peer, written on every
+  accepted digest -- including an *empty* one, because "we heard from them and
+  they hold nothing" is information, while "we heard nothing" is not.
+- The reconciler has a distinct **`stale`** state, computed as "no digest from
+  this peer since `last_digest_at`" reaching a threshold the implementation
+  chooses but the tests must NOT assert. Thresholds belong to config; the
+  contract is that the state exists and that absence produces it.
+- Absence must render as `stale`/`unknown` -- never as the last known counters
+  displayed as if they were live. A frozen counter that looks live is the same
+  bug as a bare `20:10` stamp with no date: correct value, wrong claim about now.
+- Tests assert the shape (the state exists, absence produces it, no
+  last-known-as-live path) and never the number. A test that pins 60s as truth
+  will pass while the panel lies to anyone who reads it after a weekend.
