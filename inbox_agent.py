@@ -707,7 +707,15 @@ def sent_records():
         p = os.path.join(d, name)
         try:
             with open(p) as f:
-                out.append(json.load(f))
+                rec = json.load(f)
+            # Legacy: records written before the three-verdict split say "failed",
+            # which conflated a refusal with silence. We cannot recover which it
+            # was after the fact, so it becomes unknown -- the claim we can still
+            # defend -- and we say in the record that it was migrated.
+            if rec.get("state") == "failed":
+                rec["state"] = "unknown"
+                rec["legacy_failed"] = True
+            out.append(rec)
         except Exception as e:
             broken.append((name, str(e)))
     return out, broken
@@ -723,7 +731,7 @@ def cmd_sent(a):
             h = hashlib.sha256(body.encode("utf-8")).hexdigest()[:32]
             if h != r.get("sha256") or len(body.encode("utf-8")) != r.get("len"):
                 bad.append(r.get("local_id"))
-        print(json.dumps({"records": len(recs), "broken": broken, "hash_mismatch": bad,
+        print(json.dumps({"v": 1, "records": len(recs), "broken": broken, "hash_mismatch": bad,
                           "pending": [r.get("local_id") for r in recs if r.get("state") == "pending"],
                           "refused": [r.get("local_id") for r in recs if r.get("state") == "refused"],
                           "unknown": [r.get("local_id") for r in recs if r.get("state") == "unknown"]},

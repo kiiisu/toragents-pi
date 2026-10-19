@@ -1,6 +1,6 @@
 // pi-extension harness. Run with: bun tools/test_watch.ts
 // Needs Bun (the extension is TypeScript). It exists because the extension is
-// where delivery actually happens, and three of the bugs found in it -- silent
+// where delivery actually happens, and much of what was found in it -- delivery, claim races, transcript recording -- silent
 // seeding, mark-more-than-shown, mute stealing mail -- were invisible to every
 // other test in this repo.
 const H = process.env.TORAGENTS_TEST_HOME || "/tmp/toragents-watch-test";
