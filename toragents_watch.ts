@@ -270,6 +270,87 @@ export function buildRegisterNote(stateDir: string, names: string[] = [], moves:
 	].join("\n");
 }
 
+/**
+ * One session consumes; the rest stay quiet.
+ *
+ * Without this, every pi window on the box runs this extension, they all see the
+ * same inbox, and the first one to claim a message delivers it into a session the
+ * human is not looking at. That is exactly what happened on 2026-10-19: three
+ * messages claimed, announced as delivered, and invisible to the person waiting
+ * for them -- because a different window won the race.
+ *
+ * The winner is whoever holds state/consumer.json with a live pid and a fresh
+ * heartbeat. A dead or silent holder is taken over, so a closed window never
+ * mutes the channel.
+ */
+export const CONSUMER_FILE = "consumer.json";
+export const CONSUMER_STALE_MS = 90_000;
+
+export function electConsumer(
+	stateDir: string,
+	me: { pid: number; session: string },
+	now = Date.now(),
+): { owner: string; tookOver: boolean; reason: string } {
+	const path = join(stateDir, CONSUMER_FILE);
+	let prior: any = null;
+	try {
+		prior = JSON.parse(readFileSync(path, "utf8"));
+	} catch {
+		/* no election yet */
+	}
+	const alive = (pid: number) => {
+		try {
+			process.kill(pid, 0);
+			return true;
+		} catch {
+			return false;
+		}
+	};
+	const fresh = prior && now - Number(prior.at || 0) < CONSUMER_STALE_MS;
+	if (prior && prior.pid !== me.pid && alive(Number(prior.pid)) && fresh) {
+		return { owner: String(prior.session || prior.pid), tookOver: false, reason: "another live session owns delivery" };
+	}
+	try {
+		mkdirSync(stateDir, { recursive: true });
+		writeFileSync(path, JSON.stringify({ pid: me.pid, session: me.session, at: now }));
+	} catch {
+		/* unwritable: fall back to behaving like the only session */
+		return { owner: me.session, tookOver: true, reason: "no consumer file (state unwritable)" };
+	}
+	const reason = !prior
+		? "first session to claim delivery"
+		: prior.pid === me.pid
+			? "already ours"
+			: fresh
+				? "took over from a stale entry"
+				: "took over from a dead session";
+	return { owner: me.session, tookOver: true, reason };
+}
+
+export function isConsumer(stateDir: string, pid: number, now = Date.now()): boolean {
+	try {
+		const c = JSON.parse(readFileSync(join(stateDir, CONSUMER_FILE), "utf8"));
+		return Number(c.pid) === pid && now - Number(c.at || 0) < CONSUMER_STALE_MS;
+	} catch {
+		return true; // no election recorded: do not mute a working channel
+	}
+}
+
+export function heartbeatConsumer(stateDir: string, pid: number, session: string, now = Date.now()) {
+	try {
+		const c = JSON.parse(readFileSync(join(stateDir, CONSUMER_FILE), "utf8"));
+		if (Number(c.pid) !== pid) return false; // someone else owns it; leave it alone
+	} catch {
+		/* write one below */
+	}
+	try {
+		writeFileSync(join(stateDir, CONSUMER_FILE), JSON.stringify({ pid, session, at: now }));
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 /** Plain text lines, so this can be tested and printed without a TUI. */
 export function renderChat(width = 56): string[] {
 	const rows = saidLog().slice(-CHAT_SHOWN);
@@ -676,6 +757,7 @@ export default function (pi: ExtensionAPI) {
 	let CHAT_WIDGET = true;
 
 	/** Keep the side panel current; safe to call from anywhere. */
+	let CONSUMER = true; // optimistic until the election says otherwise
 	let lastCtx: ExtensionContext | null = null;
 	const paintChat = (ctx?: ExtensionContext) => {
 		if (ctx) lastCtx = ctx;
@@ -696,6 +778,10 @@ export default function (pi: ExtensionAPI) {
 			// Muted: say nothing and mark nothing -- a muted session must not
 			// consume mail the peer meant for it, so it stays unread.
 			if (isMuted()) return;
+			// Stay silent if another live session owns delivery, or if ownership
+			// moved while we were running.
+			if (!CONSUMER || !isConsumer(STATE, process.pid)) return;
+			heartbeatConsumer(STATE, process.pid, sessionLabel());
 			const { messages } = scanInbox();
 			// RECEIVE=targeted keeps a busy box quiet: only mail that names this
 			// session is delivered. Default "all" is right for two people.
@@ -769,6 +855,22 @@ export default function (pi: ExtensionAPI) {
 
 		// Who we are, before anything writes a claim or a report.
 		MY_SESSION = resolveSession(ctx);
+
+		// Delivery is owned by exactly one session. Every pi window on this box
+		// runs this extension; without an owner they race for the same inbox and
+		// messages surface in whichever window claimed first.
+		const election = electConsumer(STATE, { pid: process.pid, session: sessionLabel() });
+		CONSUMER = election.tookOver;
+		if (!CONSUMER) {
+			try {
+				ctx.ui.notify(
+					`toragents: message delivery is owned by ${election.owner} ` +
+						`(${election.reason}). This session will not consume mail. ` +
+						`Use /toragents-takeover to take it.`,
+					"warning",
+				);
+			} catch {}
+		}
 		paintChat(ctx);
 
 		// Publish our resolved configuration before anything else: doctor's labels
@@ -865,6 +967,12 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("session_shutdown", async () => {
+		// Release ownership so the next window can pick delivery up immediately
+		// instead of waiting out the stale window.
+		try {
+			const c = JSON.parse(readFileSync(join(STATE, CONSUMER_FILE), "utf8"));
+			if (Number(c.pid) === process.pid) unlinkSync(join(STATE, CONSUMER_FILE));
+		} catch {}
 		if (timer) clearInterval(timer);
 		timer = null;
 		running = false;
@@ -947,6 +1055,22 @@ export default function (pi: ExtensionAPI) {
 					details: { to: params.to, id, ok: true, tone, styles, words }, 
 				};
 			},
+	});
+
+	pi.registerCommand("toragents-takeover", {
+		description: "Make this session the one that delivers Tor messages",
+		handler: async (_args: any, ctx: any) => {
+			try {
+				writeFileSync(join(STATE, CONSUMER_FILE), JSON.stringify({
+					pid: process.pid, session: sessionLabel(), at: Date.now(),
+				}));
+				CONSUMER = true;
+				await poll(ctx);
+				ctx.ui.notify("toragents: this session now owns message delivery", "info");
+			} catch (e: any) {
+				try { ctx.ui.notify(`toragents: takeover failed: ${e?.message || e}`, "warning"); } catch {}
+			}
+		},
 	});
 
 	pi.registerCommand("toragents-chat", {

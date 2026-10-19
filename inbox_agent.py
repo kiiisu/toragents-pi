@@ -1058,6 +1058,69 @@ def cmd_lexicon(a):
     sys.exit(f"unknown lexicon action {a.action}")
 
 
+def _chat_rows(limit=40):
+    path = Path(STATE) / "chat.jsonl"
+    if not path.exists():
+        return []
+    rows = []
+    for line in path.read_text().splitlines()[-400:]:
+        try:
+            rows.append(json.loads(line))
+        except Exception:
+            continue
+    return rows[-limit:]
+
+
+def _wrap(text, width):
+    words, line, out = text.split(), "", []
+    for w in words:
+        if len(line) + len(w) + 1 > width:
+            out.append(line)
+            line = w
+        else:
+            line = f"{line} {w}".strip()
+    if line:
+        out.append(line)
+    return out or [""]
+
+
+def render_chat(rows, width=54):
+    """The conversation, not the work: only bodies that crossed the wire."""
+    if not rows:
+        return [" no messages yet"]
+    out = []
+    for r in rows:
+        when = time.strftime("%H:%M", time.localtime(r.get("at", 0) / 1000))
+        arrow = "→" if r.get("dir") == "out" else "←"
+        out.append(f" {arrow} {r.get('peer','peer')}  {when}")
+        body = " ".join(str(r.get("body", "")).split())
+        for line in _wrap(body, width):
+            out.append(f"   {line}")
+        out.append("")
+    return out[:-1]
+
+
+def cmd_chat(a):
+    """Print the transcript, or follow it: this is the side-pane viewer."""
+    rows = _chat_rows(a.limit)
+    width = max(30, a.width)
+    print("\n".join(render_chat(rows, width)))
+    if not a.follow:
+        return
+    path = Path(STATE) / "chat.jsonl"
+    seen = len(rows)
+    while True:
+        time.sleep(1.0)
+        try:
+            all_rows = _chat_rows(1000)
+        except Exception:
+            continue
+        if len(all_rows) > seen:
+            for line in render_chat(all_rows[seen:], width):
+                print(line, flush=True)
+            seen = len(all_rows)
+
+
 def cmd_peers(a):
     p = peers()
     if not p:
@@ -1200,6 +1263,12 @@ def main():
     p.add_argument("text", nargs="*", default=None,
                    help="for `add`: the words, as trailing arguments")
     p.set_defaults(fn=cmd_lexicon)
+    p = s.add_parser("chat")
+    p.add_argument("--follow", "-f", action="store_true",
+                   help="keep printing new messages as they cross the wire")
+    p.add_argument("--limit", type=int, default=25)
+    p.add_argument("--width", type=int, default=54)
+    p.set_defaults(fn=cmd_chat)
     p = s.add_parser("tone")
     p.add_argument("label")
     p.add_argument("text", nargs="*", default=None,
