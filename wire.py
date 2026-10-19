@@ -38,10 +38,15 @@ class PublicIdentity:
         ).hex()
 
     def verify(self, message: bytes, signature: bytes) -> bool:
+        # False means ONE thing: this signature is not valid for this message.
+        # Anything else -- a TypeError, an AttributeError, a broken key object --
+        # is our bug and must not be laundered into "your signature is bad", which
+        # is what a bare except does. Callers are expected to catch and name it.
+        from nacl.exceptions import BadSignatureError
         try:
             self._verify.verify(message, signature)
             return True
-        except Exception:
+        except BadSignatureError:
             return False
 
     def to_dict(self) -> dict:

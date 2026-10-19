@@ -347,11 +347,16 @@ class Inbox:
         ok, why = dg_validate(dg)
         if not ok:
             return None, why
+        from nacl.exceptions import BadSignatureError
         try:
             if not pub.verify(nonce + b"toragents-dg1" + dg_canon(dg), dsig):
                 return None, "digest signature does not verify"
-        except Exception:
+        except BadSignatureError:
             return None, "digest signature does not verify"
+        except Exception as e:
+            # A broken verify() is OUR defect. Telling the peer their signature is
+            # bad would send them hunting in the wrong machine.
+            return None, f"digest verification error: {e.__class__.__name__}: {e}"
         fp = pub.fingerprint
         with self.lock:
             peer = self.peers.get(fp)

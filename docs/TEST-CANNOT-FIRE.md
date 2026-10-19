@@ -399,6 +399,86 @@ K2  no single-replacement mutation changes the count; the guard is the attempt
     bound from F2. Recorded as a corollary, not as coverage.
 ```
 
+## Fourth pass: watch, measure, race (90d6443, tree clean)
+
+Every case ran with a hard timeout (120s watch/race, 180s measure). A mutation
+that makes the harness hang is recorded as CANNOT FIRE, not as fired-by-timeout
+— measure talks to the real Tor network through socks, and a hang there is the
+failure the file exists to catch.
+
+| id | test file | mutation | clean | mutant | verdict |
+|----|-----------|----------|-------|--------|---------|
+| W1 | `test_watch.ts` | `!announced.has(m.id)` -> `true` (re-deliver announcements) | PASS | FAIL | fires |
+| W2 | `test_watch.ts` | mute check -> `if (false)` | PASS | FAIL | fires |
+| W3 | `test_watch.ts` | `if (fresh.length === 0) return` -> `if (false)` | PASS | PASS | **cannot fire** |
+| P1 | `test_measure.py` | strip `.onion` from the SOCKS host (the historical bug) | PASS | FAIL | fires |
+| P2 | `test_measure.py` | classify `0x04` as `connected+nonce` | PASS | FAIL | fires |
+| R1 | `test_race.ts` | claim `EEXIST` -> `return true` (both sessions "win") | PASS | PASS | **cannot fire** |
+
+W1's failure evidence is precise and worth keeping: with announcements
+re-delivered, check 7 reports `muted=3 after=3 body=false` and check 8 reports
+`from-lines=1 hasFp=false` — a duplicate header with no fingerprint. So the
+suite sees re-delivery as *malformed output*, which is what a duplicate actually
+looks like to a human.
+
+P1 is the regression this repo already paid for once: the SOCKS CONNECT must
+carry the full `<base32>.onion`, because tor resolves bare base32 by DNS and
+answers `0x04 host-unreachable` for every peer. The mutation reproduces the
+original bug exactly and the suite names it ("The bug this test exists for:
+sending the bare 56-char base32").
+
+**W3 and R1 are the two honest negatives, and R1 is the serious one.**
+
+- W3: the empty-tick early return is not behaviourally observable — with zero
+  items the following loop does nothing anyway. It is an optimisation, not a
+  contract; nothing user-visible depends on it, so no test can distinguish it.
+- R1: inverting the claim's exclusivity (an `EEXIST` now returns *true*, so both
+  racing sessions believe they own the message) leaves `test_race.ts` green. Two
+  explanations are possible and this pass did not distinguish them:
+  (a) exactly-one-delivery is enforced somewhere else as well, so the claim is
+  not the guarantee the file's header says it is; or
+  (b) the harness does not create the simultaneous-claim window, so the
+  guarantee is not exercised at all.
+
+  Either way the consequence is the same and it is the most serious entry in
+  this document: the file whose entire purpose is "two sessions, one message,
+  exactly one delivers" survives the claim being broken. Until that is resolved,
+  R1 stands as an untested guarantee, not as coverage.
+
+Recipes:
+
+```
+W1  toragents_watch.ts, poll() fresh filter
+-     !announced.has(m.id) &&
++     true &&  // MUTANT
+  expect: test_watch.ts 7. muted=3 after=3 body=false FAIL, 8. hasFp=false FAIL
+
+W2  toragents_watch.ts, poll() mute guard
+-   if (isMuted()) return;
++   if (false) return;  // MUTANT
+  expect: test_watch.ts 7. muted=4 after=4 body=true FAIL
+
+W3  toragents_watch.ts, poll() empty batch
+-   if (fresh.length === 0) return;
++   if (false) return;  // MUTANT
+  expect: no change (optimisation, not a contract)
+
+P1  tools/measure_publish.py
+-   host = onion if onion.endswith(".onion") else onion + ".onion"
++   host = onion.removesuffix(".onion")  # MUTANT
+  expect: test_socks_request_carries_the_full_onion_hostname FAIL
+
+P2  tools/measure_publish.py
+-   return DESCRIPTOR_NOT_FOUND, (...)
++   return CONNECTED_WITH_NONCE, (...)   # MUTANT
+  expect: test_rep_04_is_descriptor_not_found_not_other FAIL
+
+R1  toragents_watch.ts, claim()
+-   if (e && e.code === "EEXIST") return false;
++   if (e && e.code === "EEXIST") return true;  # MUTANT
+  expect: no change -- and that is the finding
+```
+
 ## What this audit does NOT cover
 
 An absent row is not a pass. These were not mutated, and nothing here should be
