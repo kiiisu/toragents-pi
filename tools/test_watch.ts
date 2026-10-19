@@ -12,7 +12,8 @@ const INBOX = H + "/state/inbox";
 await Bun.$`rm -rf ${H}/state`.quiet();
 await Bun.$`mkdir -p ${INBOX}`.quiet();
 
-const { writeFileSync, rmSync } = await import("node:fs");
+const { writeFileSync, readFileSync, rmSync } = await import("node:fs");
+const STATE = H + "/state";
 type Msg = { id: string; body: string; from_label: string; received: number };
 const put = (m: Msg) => writeFileSync(`${INBOX}/${m.received}-${m.id}.json`, JSON.stringify(m));
 
@@ -50,6 +51,17 @@ put({ id: "new1", body: "hello from the far side", from_label: "maestro-pc", rec
 tick!(); await settle();
 const t = sent[0]?.text || "";
 console.log(`2. new message delivered   delivered=${sent.length}  hasBody=${t.includes("hello from the far side")}  fenced=${t.includes("BEGIN PEER MESSAGE")}  -> ${sent.length === 1 && t.includes("hello from the far side") && t.includes("BEGIN PEER MESSAGE") ? "PASS" : "FAIL"}`);
+
+// 2b) the transcript RECORDED it, with the right direction.
+// Finding 1 in docs/TEST-CANNOT-FIRE.md: test_chat.ts plants its own rows and
+// asserts only the renderer, so flipping the direction at the write site left
+// every test green. Assert the FIELD (dir), not the rendered arrow.
+{
+	const rows = readFileSync(`${STATE}/chat.jsonl`, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+	const inbound = rows.filter((r: any) => r.id === "new1");
+	const ok = inbound.length === 1 && inbound[0].dir === "in" && inbound[0].body === "hello from the far side";
+	console.log(`2b. transcript recorded it rows=${rows.length} dir=${inbound[0]?.dir} body_ok=${inbound[0]?.body === "hello from the far side"}  -> ${ok ? "PASS" : "FAIL"}`);
+}
 
 // 3) same message is not delivered twice
 tick!(); await settle();

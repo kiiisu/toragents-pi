@@ -167,6 +167,96 @@ got 12 of 19 failing from a different formulation; I got 8 from mine. Both
 proved the guard fires, which is the only claim worth making — so record the
 mutation, the file and the result, never just a count.
 
+## Second pass: after the feature landed (HEAD 3c0e4bf)
+
+The first pass audited tests that were red against a missing feature. That
+proves the *harness* fails for the right reason; it proves nothing about whether
+the assertions can fail once there is real code underneath them. So the same
+mutations were re-injected into the implementation, on copies, with the clean
+baseline taken first in every case (25/25 acceptance, all pass).
+
+| id | function under test | mutation | clean | mutant | verdict |
+|----|--------------------|----------|-------|--------|---------|
+| D1 | `dg_validate` | drop the `h` width check | all pass | 21p/4f | fires |
+| D2 | `dg_validate` | raise the item cap by one (513 allowed) | all pass | 24p/1f | fires |
+| D3 | `dg_build` | put `body` back into an item | all pass | 24p/1f | fires |
+| D4 | `dg_reconcile_row` | test mismatch before the local anchor | all pass | 22p/3f | fires |
+| D5 | `dg_apply` | let id-reuse overwrite the stored hash | all pass | 24p/1f | fires |
+| D6 | `dg_validate` | ignore unknown keys inside `dg` | all pass | 24p/1f | fires |
+| M5' | `outbox` ok-gate | accept any JSON reply as delivered | 18p/0f | 1f | fires (new test) |
+
+Recipes, same form as above:
+
+```
+D1  inbox_agent.py, dg_validate()
+-             if not isinstance(it["h"], str) or not DG_H_RE.match(it["h"]):
++             if False:  # MUTANT accepts any hash width
+  expect: 4 failures, incl. test_hash_must_be_32_hex_not_16
+
+D2  inbox_agent.py, dg_validate()
+-     if total > DG_MAX_ITEMS:
++     if total > DG_MAX_ITEMS + 1:  # MUTANT lets 513 through
+  expect: 1 failure (513 items drop the whole digest)
+
+D3  inbox_agent.py, dg_build()
+-             a.append(dg_item(mid, r["body"]))
++             a.append({**dg_item(mid, r["body"]), "body": r["body"]})
+  expect: 1 failure (no body text in a serialised digest)
+
+D4  inbox_agent.py, dg_reconcile_row()
+-     if row.get("h") is None:
+-         return "never-stored"
+-     if peer_h != row.get("h"):
+-         return "mismatch"
++     if peer_h != row.get("h"):
++         return "mismatch"
++     if row.get("h") is None:
++         return "never-stored"
+  expect: 3 failures (precedence, fabrication, id reuse)
+
+D5  inbox_agent.py, dg_apply()
+-             row["state"], row["why"] = "mismatch", "id-reuse: same id, different body hash"
++             row["h"] = ph; row["state"], row["why"] = dg_reconcile_row(row), ""
+  expect: 1 failure (id reuse is a contradiction, never an overwrite)
+
+D6  inbox_agent.py, dg_validate()
+-     extra = set(d) - DG_TOP_KEYS
++     extra = set()  # MUTANT ignores unknown keys inside dg
+  expect: 1 failure (unknown keys are refused: the D2 asymmetry)
+
+M5' tools/outbox.py
+- if isinstance(reply, dict) and reply.get("ok") is True:
++ if isinstance(reply, dict):  # MUTANT
+  expect: AnExitZeroRefusalIsNotADelivery fails ("0 != 2: a refusal must leave
+  work pending")
+```
+
+**Finding 2 is now closed.** The missing case got a stub mode (`okfalse0`: print
+`{"ok": false}`, exit 0) and one test. With the `ok:true` gate removed, that test
+fails — 0 != 2 — so the suite can now tell a refusal from a delivery. The code
+was never wrong here: the probe showed the real path exits 2 and keeps the body.
+The hole was in the suite, and saying so mattered — "fix the code" would have
+been work on a path that already behaved.
+
+**Finding 1 is now closed, through the real path.** `test_watch.ts` gained check
+`2b`: after a genuine inbound delivery it reads `chat.jsonl` and asserts the
+**field** — one row for that id, `dir === "in"`, body intact. Not the rendered
+arrow; a rendered arrow is prose, and prose is what hid the gap.
+
+```
+2b  tools/test_watch.ts  (a fake inbound message through the real delivery path)
+  expect clean:  2b. transcript recorded it rows=3 dir=in  body_ok=true  -> PASS
+  mutation:      toragents_watch.ts, logSaid()
+- JSON.stringify({ at: Date.now(), dir, peer, id, body: ... })
++ JSON.stringify({ at: Date.now(), dir: dir === "in" ? "out" : "in", peer, id, body: ... })
+  expect mutant: 2b. transcript recorded it rows=3 dir=out body_ok=true  -> FAIL
+```
+
+So the recorder is guarded now, by the same file that proves delivery happens —
+which is the only place a writer can honestly be observed. `test_chat.ts` is left
+alone and still correctly guards the renderer; its header should be read as a
+claim about rendering only.
+
 ## What this audit does NOT cover
 
 An absent row is not a pass. These were not mutated, and nothing here should be

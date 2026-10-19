@@ -46,6 +46,12 @@ if mode == "fail":
     print(json.dumps({"ok": False, "error": "cannot reach peer after 4 attempts"}))
     print("  MEASURED: a peer whose tor has just restarted takes about THREE MINUTES", file=sys.stderr)
     sys.exit(1)
+if mode == "okfalse0":
+    # A refusal on a wrapper that exits 0. The shape the code's own comment warns
+    # about, and the only input that tells "any JSON is a delivery" apart from
+    # "only ok:true is a delivery". M5 in docs/TEST-CANNOT-FIRE.md.
+    print(json.dumps({"ok": False, "error": "peer refused the message"}))
+    sys.exit(0)
 if mode == "badjson":
     print("not json at all"); sys.exit(0)          # exit 0 but no verdict
 if mode == "slow_ok":
@@ -100,6 +106,30 @@ class Base(unittest.TestCase):
 
     def items(self):
         return O.items(self.state)
+
+
+class AnExitZeroRefusalIsNotADelivery(Base):
+    """M5 in docs/TEST-CANNOT-FIRE.md: before this, the suite could not tell a
+    delivery from a refusal.
+
+    A wrapper that prints a refusal and returns 0 is the exact hazard outbox.py
+    comments about. With the `ok:true` check removed the suite previously stayed
+    at 17 passed / 0 failed while the mutation deleted the body as if delivered.
+    """
+
+    def test_an_exit_zero_refusal_keeps_the_body_and_exits_two(self):
+        self.env["STUB_MODE"] = "okfalse0"
+        self.add("refused but exit 0")
+        r = self.flush()
+        self.assertEqual(r.returncode, 2, f"a refusal must leave work pending: {r.stdout}")
+        self.assertIn("FAILED", r.stdout)
+        remaining = [n for n in os.listdir(os.path.join(self.state, "outbox"))
+                     if n.endswith(".json")]
+        self.assertEqual(len(remaining), 1, f"the body was DELETED on a refusal: {remaining}")
+        with open(os.path.join(self.state, "outbox", remaining[0])) as f:
+            item = json.load(f)
+        self.assertEqual(item["body"], "refused but exit 0",
+                         "the queued body must be byte-identical after a refusal")
 
 
 class TestAdd(Base):
