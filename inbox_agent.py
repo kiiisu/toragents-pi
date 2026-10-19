@@ -657,7 +657,8 @@ def auto_session() -> str:
     return ""
 
 
-def send_to(target_onion, body, k=None, session=None, to_session=None):
+def send_to(target_onion, body, k=None, session=None, to_session=None,
+            peer_fp=None, peer_label=None):
     k = k or need_keys()             # never sign with a freshly minted key
     sock = dial(target_onion)
     try:
@@ -682,7 +683,8 @@ def send_to(target_onion, body, k=None, session=None, to_session=None):
         # (the envelope is deliberately forward-compatible); a receiver that fails
         # to parse it drops the digest, never the message.
         try:
-            dgp = dg_attach(STATE)
+            dgp = dg_attach(STATE, peer_fp=peer_fp, peer_label=peer_label,
+                            peer_onion=target_onion)
             payload["dg"] = dgp
             payload["dsig"] = b64e(k.sign(nonce + b"toragents-dg1" + dg_canon(dgp)))
         except Exception as e:
@@ -1518,7 +1520,8 @@ def cmd_send(a):
     try:
         reply = send_to(target["onion"], a.body,
                         session=getattr(a, "session", None) or auto_session() or None,
-                        to_session=getattr(a, "to_session", "") or None)
+                        to_session=getattr(a, "to_session", "") or None,
+                        peer_fp=fp_of(target, p), peer_label=target.get("label"))
     except BaseException:
         sent_confirm(rec, None)                 # attempted and did not complete
         raise
@@ -1773,6 +1776,32 @@ def _load_inbox(state_dir):
     return out
 
 
+def _journal_dirs(state_dir, mid):
+    """Which directions chat.jsonl has seen for this id: {"in", "out"} subset.
+
+    The journal is the only local history that survives a store gap, so it is what
+    turns "could not anchor this id" into a claim about WHY. A reconciler that
+    prints one sentence for three different causes is accusing whichever cause it
+    happens to name first -- and the one it names first blames the peer.
+    """
+    dirs = set()
+    p = os.path.join(state_dir, "chat.jsonl")
+    if not os.path.exists(p):
+        return dirs
+    try:
+        with open(p) as f:
+            for line in f:
+                try:
+                    r = json.loads(line)
+                except ValueError:
+                    continue
+                if r.get("id") == mid and r.get("dir"):
+                    dirs.add(r["dir"])
+    except OSError:
+        return dirs
+    return dirs
+
+
 def dg_reconcile_row(row):
     """§4 precedence: never-stored > mismatch > delivered-both > accepted-only."""
     peer_h = row.get("peer_h")
@@ -1815,13 +1844,35 @@ def dg_apply(state_dir, fp, dg):
                                 "peer_first": False, "announced": False}
         if mine:
             row["h"], row["n"], row["body"] = mine.get("sha256"), mine.get("len"), True
+        else:
+            # The store no longer holds this id. Clearing the anchor is the whole
+            # point: without it a row that matched ONCE keeps that match forever,
+            # and later digests reconcile delivered-both off evidence that is gone.
+            # "We still know" must become "we no longer know" the moment the proof
+            # disappears -- the same direction as every other fix (missing registry,
+            # missing claim, missing anchor: absence never inherits an old verdict).
+            row["h"], row["n"], row["body"] = None, None, False
         if row.get("peer_h") is not None and row["peer_h"] != ph:
             row["state"], row["why"] = "mismatch", "id-reuse: same id, different body hash"
             touched[mid] = row
             continue                      # never overwrite the first hash we saw
         row["peer_h"], row["peer_n"], row["peer_at"] = ph, pn, time.time()
         row["state"] = dg_reconcile_row(row)
-        row["why"] = "" if row["state"] != "never-stored" else "peer claims an id we never minted"
+        if row["state"] != "never-stored":
+            row["why"] = ""
+        else:
+            # Three separable causes, named instead of merged. "never-stored" is a
+            # state; blaming the peer is a verdict, and this function cannot see
+            # their store.
+            jd = _journal_dirs(state_dir, mid)
+            if "out" in jd:
+                row["why"] = ("could not anchor this id: our sent store has no record, "
+                              "but the journal shows we sent it (our store gap)")
+                row["cause"] = "store-gap"
+            else:
+                row["why"] = ("could not anchor this id: no local record here at all "
+                              "(never minted here, or no longer held)")
+                row["cause"] = "unanchorable"
         row["announced"] = False
         rows[mid] = row
         touched[mid] = row
@@ -1835,6 +1886,8 @@ def dg_apply(state_dir, fp, dg):
         if got:
             row["h"], row["n"], row["body"] = dg_hash(got.get("body", "")), \
                 len(got.get("body", "").encode()), True
+        else:
+            row["h"], row["n"], row["body"] = None, None, False
         row["peer_h"], row["peer_n"], row["peer_at"] = ph, pn, time.time()
         row["state"] = dg_reconcile_row(row)
         if row["state"] == "accepted-only" and not got:
@@ -1848,7 +1901,15 @@ def dg_apply(state_dir, fp, dg):
     return {"ok": True, "rows": touched}
 
 
-def dg_attach(state_dir):
+def fp_of(target, peers_map):
+    """The fingerprint that owns this peer record."""
+    for fp, v in peers_map.items():
+        if v is target:
+            return fp
+    return None
+
+
+def dg_attach(state_dir, peer_fp=None, peer_label=None, peer_onion=None):
     """Our current digest.
 
     SIDES, which is the thing that was wrong: `a` is what WE minted -- ids we made
@@ -1872,6 +1933,13 @@ def dg_attach(state_dir):
             body = r.get("body")
             if not isinstance(body, str) or not r.get("id"):
                 continue
+            # DISCLOSURE: a digest is an index of THIS conversation. Sweeping the
+            # whole inbox told every peer which other peers had written to us, with
+            # body hashes and byte lengths -- third-party metadata, disclosed by a
+            # feature whose entire premise is "index, not bodies". A synthetic test
+            # frame rode out in every digest for the same reason.
+            if peer_fp and r.get("from_fingerprint") != peer_fp:
+                continue
             got[r["id"]] = {"id": r["id"], "h": dg_hash(body),
                             "n": len(body.encode("utf-8"))}
     sent = {}
@@ -1886,6 +1954,12 @@ def dg_attach(state_dir):
             except Exception:
                 continue
             if r.get("state") != "confirmed":
+                continue
+            # Same rule on our own side: only rows addressed to THIS peer, or the
+            # digest describes our correspondence with everyone else too.
+            if peer_label and r.get("to") and r.get("to") != peer_label:
+                continue
+            if peer_onion and r.get("onion") and r.get("onion") != peer_onion:
                 continue
             mid = r.get("peer_id") or r.get("local_id")
             sent[mid] = {"id": mid, "h": r.get("sha256"), "n": r.get("len")}
