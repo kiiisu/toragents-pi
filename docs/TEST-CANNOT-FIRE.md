@@ -33,6 +33,71 @@ fire with three mutations — truncate the body, drop the failure record, tamper
 with a stored body. A check with a documented mutation is the standard; a check
 without one is a hope.
 
+## Worse than CANNOT FIRE: green over a feature that cannot work
+
+The rows below test whether an assertion can fail. This class is different, and
+it belongs first because it happened here, to this suite, and a mutation audit
+would not have caught it.
+
+Between `e125517` and `be6100b`, the digest could not work at all.
+`_verify_digest()` called `PublicKey.from_dict()`, and `wire.py` defines no
+`PublicKey` — it defines `PublicIdentity`, whose `from_dict` is at line 51. The
+`AttributeError` was caught by a bare `except Exception` and reported as:
+
+    digest frame is missing pubkey/nonce/dsig
+
+So every `digest` frame was refused, every piggybacked `dg` was dropped
+(`[inbox] dg dropped: …`), `seen.json` was never written from the wire, and
+reconciliation never ran outside unit tests calling `dg_apply` directly. Four
+commits passed over it. Twenty-five acceptance tests reported success.
+
+**Why the suite was blind — two distinct causes, both structural:**
+
+1. **Every assertion was a refusal.** `test_a_digest_frame_cannot_be_replayed`
+   asserted that a digest is refused — and passed, because the bug guaranteed
+   refusal. A test whose premise is also its subject cannot see the feature it
+   claims to check. The piggyback test asserted the *body* survived and never
+   that the `dg` landed, so "compat holds" was true while every digest was
+   silently dropped.
+2. **The error described the wrong field.** The handler flattened every
+   exception into a statement about the caller's frame. It named a symptom
+   (missing key) and pointed away from the cause (missing method). A message
+   that confidently describes the wrong object is worse than silence, because
+   silence at least invites investigation.
+
+**The proof that the positive path now exists** is not that the assertions went
+green. It is that the same frame which used to answer
+`digest frame is missing pubkey/nonce/dsig` now answers `sender not on
+allowlist` — it parses, it verifies a signature, and only then is refused on
+policy. A frame that reaches a semantic refusal has travelled through the code.
+
+**One command, any commit** (exit 0 = the op accepts a signed frame; exit 3 =
+the op is dead; it prints the receiver's own words either way):
+
+```bash
+python3 tools/repro_digest_dead.py            # exit 0 = alive, 3 = dead
+```
+
+Measured: HEAD `252b9cf` -> `{'ok': True, 'error': '', 'applied': 1}`, exit 0.
+The same script with `PublicIdentity.from_dict` reverted to `PublicKey.from_dict`
+in a copy -> `{'ok': False, 'error': "handler: name 'PublicKey' is not defined"}`,
+exit 3.
+
+That second message is not the one this section opened with, and the difference
+is itself evidence: the older commit swallowed the `NameError` into
+"digest frame is missing pubkey/nonce/dsig", while the current code lets it
+surface with its own name. The flattening got fixed; the missing method was the
+bug underneath it.
+
+**The rule this carries — checkable, not advice:**
+
+> A refusal assertion is not evidence that the positive path runs.
+
+The weaker form, "add positive tests", is a wish. The checkable form is: for
+every feature, name the assertion that must fail if the feature's happy path
+never executes, and then break the happy path to see whether the count moves.
+An assertion that survives the feature being dead is not testing the feature.
+
 ## Results
 
 | id | test file | claim it makes | clean | mutant | verdict |
