@@ -44,9 +44,11 @@
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Key, matchesKey, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
-import { panelMode, readPolicy } from "./_lib/toragents-policy.ts";
-import { SideColumn } from "./_lib/toragents-side-column.ts";
+import { panelMode, readPolicy, writePanelWidth } from "./_lib/toragents-policy.ts";
+import { clampColumnWidth, COLUMN_MIN, SideColumn } from "./_lib/toragents-side-column.ts";
 import {
+	type MailFacts,
+	readMailFacts,
 	type Said,
 	readThread,
 	threadSignature,
@@ -67,7 +69,7 @@ import {
  * Self-declared for now, and reported when the pane mounts. It is not yet consumed
  * by doctor; when it is, it should come from here rather than from a second copy.
  */
-export const PANEL_VERSION = 2;
+export const PANEL_VERSION = 3;
 
 const WIDTH_DEFAULT = 46;
 const MIN_TERMINAL = 110;
@@ -83,11 +85,43 @@ const PREVIEW_LINES = 2;
  * is right, but it's…"), and a fixed 60 would eat half of a 110-column terminal.
  * TORAGENTS_PANEL_WIDTH overrides everything.
  */
+/**
+ * The width to reserve, in order of authority: an operator's env override, the
+ * width the user dragged the edge to, then the proportional default.
+ *
+ * The middle term is why this function exists. A fixed 36% is the program's
+ * guess about how much of the screen the conversation deserves; the moment a
+ * person drags the edge they have replaced that guess with an answer, and an
+ * answer outranks a guess.
+ */
 function columnWidth(terminalWidth = 0): number {
+	const cols = terminalWidth > 0 ? terminalWidth : 400;
 	const raw = Number(process.env.TORAGENTS_PANEL_WIDTH || 0);
-	if (Number.isFinite(raw) && raw > 0) return Math.max(28, Math.min(100, Math.round(raw)));
+	if (Number.isFinite(raw) && raw > 0) return clampColumnWidth(Math.round(raw), cols);
+	let saved = 0;
+	try {
+		saved = Number(readPolicy().panel?.width || 0);
+	} catch {
+		saved = 0;
+	}
+	if (Number.isFinite(saved) && saved >= COLUMN_MIN) return clampColumnWidth(Math.round(saved), cols);
 	if (!terminalWidth) return WIDTH_DEFAULT;
-	return Math.max(38, Math.min(62, Math.round(terminalWidth * 0.36)));
+	return clampColumnWidth(Math.round(terminalWidth * 0.36), cols);
+}
+
+/**
+ * Mailbox facts, refreshed on a short clock rather than per paint.
+ *
+ * `readMailFacts` is mtime-cached, but a wheel spin can repaint sixty times a
+ * second and each of those would still be three `stat` calls. Facts change when
+ * mail arrives or a send succeeds -- one and a half seconds is far finer than
+ * that and free.
+ */
+let factsMemo: { at: number; facts: MailFacts } | null = null;
+function facts(): MailFacts {
+	const now = Date.now();
+	if (!factsMemo || now - factsMemo.at > 1500) factsMemo = { at: now, facts: readMailFacts() };
+	return factsMemo.facts;
 }
 
 function ago(ms: number): string {
@@ -233,12 +267,42 @@ interface Block {
  * `ends` per message) so selection and scrolling agree with what is on screen
  * instead of re-deriving it separately and drifting.
  */
+/**
+ * The footer: what the mailbox knows that the conversation does not.
+ *
+ * Two lines when there is room, one when there is not, and silence when there is
+ * nothing to report -- a status area that always has something in it is a status
+ * area people stop reading. Every fact here is a file read; none of it is
+ * inference, and "unknown" is spelled out rather than rounded to a tick.
+ */
+export function renderFooter(facts: MailFacts, width: number, theme: any): string[] {
+	const dim = (x: string) => (theme ? theme.fg("dim", x) : x);
+	const accent = (x: string) => (theme ? theme.fg("accent", x) : x);
+	const out: string[] = [];
+	if (facts.queued > 0) {
+		const age = facts.oldestQueued !== null ? ago(Date.now() - facts.oldestQueued) : "";
+		const bits = [`outbox ${facts.queued}`];
+		if (facts.worstAttempts > 0) bits.push(`${facts.worstAttempts} tries`);
+		if (age) bits.push(`queued ${age}`);
+		out.push(accent(` ${bits.join(" · ")}`));
+		if (width >= 40 && facts.worstPeer) {
+			out.push(dim(`  ${facts.worstPeer} unreachable${facts.lastError ? ` — ${facts.lastError}` : ""}`));
+		}
+	}
+	const second: string[] = [];
+	if (facts.strangers > 0) second.push(`${facts.strangers} unknown sender${facts.strangers === 1 ? "" : "s"}`);
+	if (facts.unsent > 0) second.push(`${facts.unsent} unconfirmed`);
+	if (second.length) out.push(dim(` ${second.join(" · ")}`));
+	return out;
+}
+
 export function renderColumn(
 	msgs: Said[],
 	width: number,
 	rows: number,
 	view: ColumnView,
 	theme: any,
+	facts?: MailFacts,
 ): { lines: string[]; starts: number[]; ends: number[] } {
 	const dim = (s: string) => (theme ? theme.fg("dim", s) : s);
 	const accent = (s: string) => (theme ? theme.fg("accent", s) : s);
@@ -304,7 +368,11 @@ export function renderColumn(
 		? " j/k · enter open · g/G ends · esc out"
 		: " alt+f focus · alt+j/k · alt+e open";
 
-	const contentRows = Math.max(0, rows - 2);
+	// The footer sits between the list and the key hint, and only when it has
+	// something to say: an always-present status row is a row nobody reads.
+	const footer = facts ? renderFooter(facts, width, theme).slice(0, rows >= 14 ? 2 : 1) : [];
+	const chrome = 2 + footer.length;
+	const contentRows = Math.max(0, rows - chrome);
 	const flat: string[] = [];
 	const starts: number[] = [];
 	const ends: number[] = [];
@@ -319,6 +387,10 @@ export function renderColumn(
 	out[0] = truncateToWidth(head, width, "");
 	if (rows >= 2) out[rows - 1] = dim(truncateToWidth(foot, width, ""));
 	for (let i = 0; i < contentRows; i++) out[1 + i] = flat[top + i] ?? "";
+	for (let i = 0; i < footer.length; i++) {
+		const row = rows - 1 - footer.length + i;
+		if (row > 0 && row < rows - 1) out[row] = truncateToWidth(footer[i], width, "");
+	}
 	return {
 		lines: out,
 		starts: starts.map((s) => s - top),
@@ -493,7 +565,7 @@ export default function (pi: ExtensionAPI) {
 		const rows = Number(tui?.terminal?.rows || 30);
 		const width = column?.width ?? columnWidth(Number(tui?.terminal?.columns || 0));
 		const height = Math.max(3, rows - 2);
-		const layout = renderColumn(msgs, width, rows, view, theme);
+		const layout = renderColumn(msgs, width, rows, view, theme, facts());
 		const s = layout.starts[view.selected];
 		const e = layout.ends[view.selected];
 		if (s === undefined || e === undefined) return;
@@ -588,10 +660,21 @@ export default function (pi: ExtensionAPI) {
 					column = new SideColumn(t, {
 						width: columnWidth(Number(t?.terminal?.columns || 0)),
 						minTerminalWidth: MIN_TERMINAL,
-						render: (w, r) => renderColumn(msgs, w, r, view, theme).lines,
+						render: (w, r) => renderColumn(msgs, w, r, view, theme, facts()).lines,
 						onWheel: (delta) => {
 							scrollLines(delta * 3);
 							return true;
+						},
+						onResizeCommit: (w) => {
+							// The width is a decision, so it is written once, on release --
+							// not per motion event, which would rewrite the file sixty times
+							// during one drag.
+							if (!writePanelWidth(w)) {
+								try {
+									ctx.ui.notify("toragents: resized, but could not save it (policy.json)", "warning");
+								} catch {}
+							}
+							revealSelection();
 						},
 					});
 				}
@@ -771,6 +854,31 @@ export default function (pi: ExtensionAPI) {
 					repaint();
 					return taken();
 				}
+				// Divider width: the keyboard twin of dragging the edge. Fullscreen
+				// mouse input is not universal -- SSH, multiplexers and terminals that
+				// never send motion would make a mouse-only resize a feature half the
+				// sessions cannot use.
+				if (column?.mounted && (matchesKey(data, Key.alt("[")) || matchesKey(data, Key.alt("]")))) {
+					const rawCols = Number(tui?.terminal?.columns || 0) + column.width + 1;
+					const delta = matchesKey(data, Key.alt("[")) ? -2 : 2;
+					const next = clampColumnWidth(column.width + delta, rawCols);
+					column.setWidth(next);
+					writePanelWidth(next);
+					revealSelection();
+					repaint();
+					return taken();
+				}
+				if (column?.mounted && matchesKey(data, Key.alt("\\"))) {
+					// Reset forgets the dragged width instead of freezing today's
+					// proportional value as if it were a choice.
+					writePanelWidth(0);
+					const rawCols = Number(tui?.terminal?.columns || 0) + column.width + 1;
+					column.setWidth(clampColumnWidth(Math.round(rawCols * 0.36), rawCols));
+					revealSelection();
+					repaint();
+					return taken();
+				}
+
 				// page scrolling only while focused (plain pgup/pgdn belong to the
 				// chat transcript otherwise)
 				if (f && matchesKey(data, Key.pageUp)) {

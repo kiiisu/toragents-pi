@@ -456,6 +456,22 @@ and restores width, render hook and wheel routing on dispose. That is why the
 panel test asserts the restore — a pane that does not un-narrow leaves pi
 permanently squeezed.
 
+**The edge is a handle.** The divider between chat and mailbox can be dragged:
+hover it and the line thickens, press and drag and a ghost edge follows the
+pointer with the width beside it, release and the width is committed and saved to
+`policy.json` (`panel.width`). The chat reflows once, on release -- not sixty times
+during the drag. `alt+[` / `alt+]` nudge the width by two columns and `alt+\\`
+forgets the choice and returns to the proportional default, because fullscreen
+mouse input is not universal and a resize only a mouse can perform is a resize
+half the sessions cannot use.
+
+The column's last line is a footer of **mailbox facts the conversation cannot
+express**, straight from files that already exist: letters sitting in `outbox/`
+with how many times they have been tried and why (the peer's own error words), how
+long they have been waiting, senders whose fingerprint is not known, and sends the
+transport itself cannot confirm (`state: "unknown"`). An empty mailbox renders no
+footer at all -- a status line that is always present is a status line nobody reads.
+
 Both panes open with a status that answers "whose turn is it": the trailing run of
 received messages since the last one you sent, named when it is one peer
 (`kisu waiting`) and counted when it is several. It is a pure function of the

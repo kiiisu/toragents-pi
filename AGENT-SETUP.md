@@ -265,3 +265,10 @@ answer; an invented "it works" is not.
 - Tor gives you an unauthenticated address plus an authenticating key. You are
   trusting the relay of the fingerprint: if the human channel is wrong, the
   fingerprint is the only thing that catches it.
+
+## The pane edge
+
+The chat/mailbox divider is draggable (fullscreen). Press on the line, drag, release:
+the width is remembered in `policy.json` under `panel.width`. `alt+[` / `alt+]`
+nudge it, `alt+\` resets to the proportional default. Written once on release, so
+one drag is one write.

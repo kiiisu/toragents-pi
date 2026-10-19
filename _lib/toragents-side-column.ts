@@ -51,6 +51,85 @@ function descriptorFor(obj: object, key: string): PropertyDescriptor | undefined
 	return undefined;
 }
 
+/**
+ * Where the divider is, and what the pointer is doing to it.
+ *
+ * Pure, so the drag can be tested without a terminal: the panel's mouse handling
+ * is the part you cannot exercise by reading code twice, and simulation of the
+ * real event stream is worth more than a carefully-worded comment.
+ */
+export type DividerIntent =
+	| { kind: "none" }
+	| { kind: "hover" }
+	| { kind: "start" }
+	| { kind: "drag"; width: number }
+	| { kind: "end"; width: number };
+
+/** Narrowest column, and the space the chat may never be squeezed below. */
+export const COLUMN_MIN = 30;
+export const CHAT_MIN = 60;
+
+/**
+ * Clamp a requested width to what this terminal can actually give.
+ *
+ * The upper bound is the chat's, not the column's: a pane you can widen until
+ * the conversation is a sliver is a pane that can hide the thing it explains.
+ */
+export function clampColumnWidth(width: number, cols: number): number {
+	const n = Math.round(Number(width));
+	const max = Math.max(COLUMN_MIN, Math.round(cols) - CHAT_MIN);
+	return Math.max(COLUMN_MIN, Math.min(max, Number.isFinite(n) ? n : COLUMN_MIN));
+}
+
+/**
+ * Decode one SGR mouse report (`ESC [ < b ; x ; y (M|m)`) into pi's shape.
+ *
+ * Only used by the tests and by anything that needs to reason about a raw
+ * sequence: pi's own parser already hands us normalized events at runtime.
+ */
+export function parseSgrMouse(data: string): { button: number; x: number; y: number; release: boolean } | null {
+	const m = /^\x1b\[<(\d+);(\d+);(\d+)([Mm])$/.exec(data);
+	if (!m) return null;
+	return { button: Number(m[1]), x: Number(m[2]) - 1, y: Number(m[3]) - 1, release: m[4] === "m" };
+}
+
+/**
+ * Classify a mouse event against the divider.
+ *
+ * `button` is pi's raw SGR bitmask: bits 0-1 are the button, bit 5 (32) marks
+ * motion, and `release` is the `m` terminator. Only the divider column and its
+ * two neighbours are ours — everywhere else the event belongs to the transcript
+ * (selection, links), so we must not swallow it.
+ */
+export function dividerIntent(input: {
+	cols: number;
+	width: number;
+	x: number;
+	button: number;
+	release: boolean;
+	dragging: boolean;
+	/** Width currently under the pointer during a drag. */
+	candidate?: number;
+}): DividerIntent {
+	const cols = Math.round(Number(input.cols));
+	const x = Number(input.x);
+	if (!Number.isFinite(cols) || cols <= 0 || !Number.isFinite(x)) return { kind: "none" };
+	const motion = (input.button & 32) !== 0;
+	const left = (input.button & 3) === 0;
+	const atPointer = clampColumnWidth(cols - Math.round(x) - 1, cols);
+
+	if (input.dragging) {
+		if (input.release) return { kind: "end", width: clampColumnWidth(input.candidate ?? input.width, cols) };
+		return { kind: "drag", width: atPointer };
+	}
+	const dividerX = cols - clampColumnWidth(input.width, cols) - 1;
+	if (Math.abs(x - dividerX) > 1) return { kind: "none" };
+	if (input.release) return { kind: "none" }; // a click on the divider is not a command yet
+	if (motion) return left ? { kind: "drag", width: atPointer } : { kind: "hover" };
+	if (left) return { kind: "start" };
+	return { kind: "none" };
+}
+
 export interface SideColumnOptions {
 	/** Column width in cells (excluding the 1-cell separator). */
 	width: number;
@@ -68,6 +147,15 @@ export interface SideColumnOptions {
 	 * claim.
 	 */
 	onWheel?: (delta: number, event: any) => boolean;
+	/**
+	 * Called when a drag of the divider ends, with the width the user chose.
+	 *
+	 * Not called during the drag: committing width means changing
+	 * `terminal.columns`, which reflows the whole chat, and doing that per motion
+	 * event is how a resize turns into a slideshow. The drag paints a ghost; the
+	 * release is the one reflow.
+	 */
+	onResizeCommit?: (width: number) => void;
 }
 
 export class SideColumn {
@@ -78,9 +166,14 @@ export class SideColumn {
 	private originalColumnsAny: PropertyDescriptor | undefined;
 	private originalDoRender: ((...args: any[]) => any) | null = null;
 	private originalRouteWheel: ((event: any, delta: number) => any) | null = null;
+	private originalHandleMouse: ((event: any) => any) | null = null;
 	private originalWrite: ((data: string) => void) | null = null;
 	private disposed = false;
 	private installed = false;
+	/** Pointer is over the divider: the line thickens so the edge is findable. */
+	private hovering = false;
+	/** Candidate width while a drag is in progress; null when not dragging. */
+	private pending: number | null = null;
 
 	private cached: string[] | null = null;
 	private cachedCols = 0;
@@ -104,6 +197,25 @@ export class SideColumn {
 	/** The width actually reserved, so callers measure with the number they paint with. */
 	get width(): number {
 		return this.opts.width;
+	}
+
+	/** True while the user is dragging the divider. */
+	get resizing(): boolean {
+		return this.pending !== null;
+	}
+
+	/**
+	 * Change the reserved width in place.
+	 *
+	 * The `columns` getter reads `opts.width` on every access, so the reflow is
+	 * immediate on the next pi frame; this only has to invalidate the cache.
+	 */
+	setWidth(width: number): void {
+		const next = clampColumnWidth(width, this.rawColumns());
+		if (next === this.opts.width) return;
+		this.opts.width = next;
+		this.invalidate();
+		this.repaint();
 	}
 
 	install(): { ok: boolean; why: string } {
@@ -199,6 +311,21 @@ export class SideColumn {
 			};
 		}
 
+		// 4. the divider is a handle. pi hit-tests its own component tree, and this
+		// column is deliberately not in it (it is painted beside pi, not inside),
+		// so the only seam that sees pointer events here is the alt-screen's own
+		// dispatch. Same class of patch as routeWheel above -- private method,
+		// verified by tests, replaced if pi ever exposes a public hook.
+		if (typeof this.tui.handleMouseEvent === "function") {
+			const originalMouse = this.tui.handleMouseEvent;
+			this.originalHandleMouse = originalMouse;
+			this.tui.handleMouseEvent = function (event: any) {
+				if (self.disposed || !self.installed) return originalMouse.call(self.tui, event);
+				if (self.routeMouse(event)) return; // handled here; never reaches selection
+				return originalMouse.call(self.tui, event);
+			};
+		}
+
 		this.installed = true;
 		this.cacheValid = false;
 		return { ok: true, why: `mounted ${this.opts.width} columns` };
@@ -225,6 +352,12 @@ export class SideColumn {
 			this.tui.routeWheel = this.originalRouteWheel;
 			this.originalRouteWheel = null;
 		}
+		if (this.originalHandleMouse) {
+			this.tui.handleMouseEvent = this.originalHandleMouse;
+			this.originalHandleMouse = null;
+		}
+		this.hovering = false;
+		this.pending = null;
 		// Wipe our columns so no stale text is left beside the chat.
 		try {
 			const rows = Number(this.terminal?.rows || 0);
@@ -241,6 +374,68 @@ export class SideColumn {
 	repaint(): void {
 		this.cacheValid = false;
 		this.paintInternal(true);
+	}
+
+	/**
+	 * Route one pointer event: the divider, or nothing at all.
+	 *
+	 * True means the event was ours. Everything else falls through to pi --
+	 * including motion a column away from the divider, because a pane that
+	 * swallows pointer events it has no use for breaks selection in the chat it
+	 * is supposed to sit beside.
+	 */
+	private routeMouse(event: any): boolean {
+		const intent = dividerIntent({
+			cols: this.rawColumns(),
+			width: this.opts.width,
+			x: Number(event?.x),
+			button: Number(event?.button || 0),
+			release: Boolean(event?.release),
+			dragging: this.pending !== null,
+			candidate: this.pending ?? undefined,
+		});
+		switch (intent.kind) {
+			case "none":
+				if (this.hovering) {
+					this.hovering = false;
+					this.invalidate();
+					this.repaint();
+				}
+				return false;
+			case "hover":
+				if (!this.hovering) {
+					this.hovering = true;
+					this.invalidate();
+					this.repaint();
+				}
+				return true;
+			case "start":
+				this.hovering = true;
+				this.pending = clampColumnWidth(this.opts.width, this.rawColumns());
+				this.invalidate();
+				this.repaint();
+				return true;
+			case "drag":
+				this.pending = intent.width;
+				this.invalidate();
+				this.repaint();
+				return true;
+			case "end": {
+				const chosen = intent.width;
+				this.pending = null;
+				this.hovering = false;
+				this.opts.width = chosen; // the reflow happens on pi's next frame
+				this.invalidate();
+				this.repaint();
+				try {
+					this.opts.onResizeCommit?.(chosen);
+				} catch {
+					/* persisting the width is best effort, never fatal */
+				}
+				return true;
+			}
+		}
+		return false;
 	}
 
 	private rawColumns(): number {
@@ -266,6 +461,13 @@ export class SideColumn {
 		if (!content) return;
 
 		const sepCol = cols - sw;
+		// The edge advertises itself: plain line, thick line under the pointer,
+		// double line while it is being dragged. No cursor-shape escape games --
+		// terminal support for those is a lottery; a glyph is not.
+		const sepGlyph = this.pending !== null ? "║" : this.hovering ? "┃" : "│";
+		const sepPaint = this.pending !== null || this.hovering
+			? `\x1b[36m${sepGlyph}\x1b[39m`
+			: `\x1b[90m${sepGlyph}\x1b[39m`;
 		const pad = (text: string) => {
 			const cut = truncateToWidth(text, sw, "", true);
 			return cut + " ".repeat(Math.max(0, sw - visibleWidth(cut)));
@@ -283,8 +485,20 @@ export class SideColumn {
 		let buf = SAVE + WRAP_OFF;
 		for (const i of dirty) {
 			const row = i + 1;
-			buf += moveCursor(row, sepCol) + "\x1b[90m│\x1b[39m";
+			buf += moveCursor(row, sepCol) + sepPaint;
 			buf += moveCursor(row, sepCol + 1) + missing(formatted[i]);
+		}
+		// While dragging, the committed column stays put and a ghost edge follows
+		// the pointer with the width beside it: the number is the thing being
+		// chosen, so it should be readable before the choice is made.
+		if (this.pending !== null) {
+			const ghostWidth = clampColumnWidth(this.pending, cols);
+			const ghostCol = cols - ghostWidth - 1;
+			if (ghostCol >= 1) {
+				for (let r = 1; r <= rows; r++) buf += moveCursor(r, ghostCol) + "\x1b[36m║\x1b[39m";
+				const label = String(ghostWidth);
+				buf += moveCursor(1, Math.max(1, ghostCol - label.length - 1)) + `\x1b[36m${label}\x1b[39m`;
+			}
 		}
 		buf += WRAP_ON + RESTORE;
 

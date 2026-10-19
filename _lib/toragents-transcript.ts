@@ -376,3 +376,106 @@ export function writeSnapshot(rows: Said[]): boolean {
 		return false;
 	}
 }
+
+/**
+ * What the mailbox knows that the conversation does not.
+ *
+ * The transcript answers "what was said". These are the four facts it cannot
+ * express, and every one of them comes from a file that already exists:
+ *
+ *   queued     letters in outbox/ that have not gone out (with why and for how
+ *              long) -- the state that made tonight's "is she offline?" a
+ *              five-command investigation instead of one line on screen.
+ *   strangers  received mail whose `from_known` is false. A security fact: it
+ *              answers "who has my onion", which no amount of reading the
+ *              transcript will tell you.
+ *   unsent     sent/ records where `state` is not an acknowledgement. "unknown"
+ *              means the transport itself cannot say whether it landed, and
+ *              hiding that behind a tick would be the lie this whole project is
+ *              built to avoid.
+ *   dark       age of the oldest queued letter: how long the peer has been out
+ *              of reach, for as long as the queue has been trying.
+ *
+ * Cached on directory mtime, because this runs on a poll tick and the inbox
+ * holds hundreds of files: unchanged directory, unchanged answer. Any read
+ * failure degrades that fact to zero rather than throwing -- a mailbox the pane
+ * cannot read must not take the pane with it.
+ */
+export interface MailFacts {
+	queued: number;
+	queuedChars: number;
+	oldestQueued: number | null;
+	worstPeer: string | null;
+	worstAttempts: number;
+	lastError: string | null;
+	strangers: number;
+	unsent: number;
+}
+
+const FACTS_EMPTY: MailFacts = {
+	queued: 0,
+	queuedChars: 0,
+	oldestQueued: null,
+	worstPeer: null,
+	worstAttempts: 0,
+	lastError: null,
+	strangers: 0,
+	unsent: 0,
+};
+
+let factsCache: { key: string; facts: MailFacts } | null = null;
+
+function readJsonDir(dir: string, key: string): { key: string; rows: any[] } {
+	let names: string[] = [];
+	let stamp = 0;
+	try {
+		names = readdirSync(dir).filter((n) => n.endsWith(".json"));
+		stamp = statSync(dir).mtimeMs;
+	} catch {
+		return { key: `${key}:absent`, rows: [] };
+	}
+	const rows: any[] = [];
+	for (const name of names) {
+		try {
+			rows.push(JSON.parse(readFileSync(join(dir, name), "utf8")));
+		} catch {
+			/* one broken file must not hide the rest */
+		}
+	}
+	return { key: `${key}:${names.length}:${stamp}`, rows };
+}
+
+export function readMailFacts(stateDir = STATE): MailFacts {
+	const out = readJsonDir(join(stateDir, "outbox"), "outbox");
+	const inbox = readJsonDir(join(stateDir, "inbox"), "inbox");
+	const sent = readJsonDir(join(stateDir, "sent"), "sent");
+	const key = `${out.key}|${inbox.key}|${sent.key}`;
+	if (factsCache && factsCache.key === key) return factsCache.facts;
+
+	const facts: MailFacts = { ...FACTS_EMPTY };
+	const now = Date.now();
+	for (const item of out.rows) {
+		if (item?.sent_id) continue; // already delivered, waiting for the file to go
+		facts.queued++;
+		const body = typeof item.body === "string" ? item.body.length : 0;
+		facts.queuedChars += body;
+		const created = Number(item.created) * 1000;
+		if (Number.isFinite(created) && created > 0) {
+			if (facts.oldestQueued === null || created < facts.oldestQueued) facts.oldestQueued = created;
+		}
+		const attempts = Number(item.attempts) || 0;
+		if (attempts > facts.worstAttempts) {
+			facts.worstAttempts = attempts;
+			facts.worstPeer = typeof item.to === "string" ? item.to : null;
+			facts.lastError = typeof item.last_error === "string" ? item.last_error.split("\n")[0].slice(0, 60) : null;
+		}
+	}
+	for (const msg of inbox.rows) if (msg?.from_known === false) facts.strangers++;
+	for (const rec of sent.rows) {
+		const state = String(rec?.state || "");
+		if (state && state !== "acked" && state !== "delivered") facts.unsent++;
+	}
+	if (facts.oldestQueued !== null) facts.oldestQueued = now - facts.oldestQueued;
+	factsCache = { key, facts };
+	return facts;
+}

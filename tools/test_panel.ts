@@ -116,16 +116,16 @@ process.env.TORAGENTS_HOME = dirname(STATE);
 delete process.env.TORAGENTS_PANEL;
 
 const { readThread, threadSignature, tldr } = await import("../_lib/toragents-transcript.ts");
-const { SideColumn } = await import("../_lib/toragents-side-column.ts");
-const { PANEL_VERSION, renderColumn, renderStrip, statusSummary, subject, waitingOn } = await import("../toragents-panel.ts");
-const { POLICY_DEFAULTS, isReceiver, panelMode, policyPath, readPolicy } = await import("../_lib/toragents-policy.ts");
+const { SideColumn, clampColumnWidth, dividerIntent, parseSgrMouse } = await import("../_lib/toragents-side-column.ts");
+const { PANEL_VERSION, renderColumn, renderFooter, renderStrip, statusSummary, subject, waitingOn } = await import("../toragents-panel.ts");
+const { POLICY_DEFAULTS, isReceiver, panelMode, policyPath, readPolicy, writePanelWidth } = await import("../_lib/toragents-policy.ts");
 
 const theme = { fg: (_c: string, s: string) => s, bold: (s: string) => s };
 
 // The reader's self-declared version, pinned the way EXT_VERSION is: a change to how
 // the pane behaves must arrive with a bump, or a window loaded before it will keep
 // rendering the old shape and look healthy. Change this pair together, deliberately.
-ok(PANEL_VERSION === 2, `the reader is panel v2 (found v${PANEL_VERSION}) — bump both sides together`);
+ok(PANEL_VERSION === 3, `the reader is panel v3 (found v${PANEL_VERSION}) — bump both sides together`);
 
 // ── 1. the transcript merge ────────────────────────────────────────────────
 const rows = readThread();
@@ -330,6 +330,7 @@ for (const width of [28, 46, 100]) {
 		},
 	};
 	let renders = 0;
+	const mouseCalls: any[] = [];
 	const fakeTui: any = {
 		terminal: fakeTerminal,
 		mode: "tui",
@@ -338,6 +339,10 @@ for (const width of [28, 46, 100]) {
 		},
 		requestRender: () => {},
 		routeWheel: () => "pi",
+		handleMouseEvent: (event: any) => {
+			mouseCalls.push(event);
+			return "pi";
+		},
 	};
 	const col = new SideColumn(fakeTui, {
 		width: 46,
@@ -358,6 +363,58 @@ for (const width of [28, 46, 100]) {
 	ok(painted.includes("toragents"), "column content was painted");
 	ok(/\x1b\[\d+;\d+H/.test(painted), "column is painted with absolute cursor moves");
 
+	// The drag, end to end: press on the divider, move, release. This is the part
+	// a fake TUI can actually prove -- that the event reaches the column, that the
+	// width only changes on release, and that the commit callback fires once.
+	{
+		let committed: number | null = null;
+		const resizeTerminal = { ...fakeTerminal, columns: 176, write: (x: string) => writes.push(x) };
+		const resizeTui: any = {
+			terminal: resizeTerminal,
+			mode: "tui",
+			doRender: () => {},
+			requestRender: () => {},
+			handleMouseEvent: (event: any) => {
+				mouseCalls.push(event);
+				return "pi";
+			},
+		};
+		const draggable = new SideColumn(resizeTui, {
+			width: 60,
+			minTerminalWidth: 100,
+			render: (w: number, r: number) => renderColumn(rows, w, r, viewAt(0), theme).lines,
+			onResizeCommit: (w: number) => {
+				committed = w;
+			},
+		});
+		ok(draggable.install().ok, "a resizable column mounts");
+		const dividerX = 176 - 60 - 1;
+		resizeTui.handleMouseEvent({ button: 0, x: dividerX, y: 3, release: false });
+		ok(draggable.resizing, "pressing the divider starts a drag");
+		mouseCalls.length = 0;
+		resizeTui.handleMouseEvent({ button: 32, x: 176 - 80 - 1, y: 3, release: false });
+		ok(committed === null, "moving during a drag does not commit anything");
+		ok(mouseCalls.length === 0, "drag events are consumed, not leaked to pi's selection");
+		ok(resizeTerminal.columns === 176 - 60 - 1, "the chat is not reflowed mid-drag");
+		resizeTui.handleMouseEvent({ button: 0, x: 176 - 80 - 1, y: 3, release: true });
+		ok(committed === 80, `release commits the dragged width (got ${committed})`);
+		ok(!draggable.resizing, "the drag is over");
+		ok(resizeTerminal.columns === 176 - 80 - 1, "and only then does the chat reflow");
+		ok(draggable.width === 80, "the reserved width is the chosen one");
+
+		mouseCalls.length = 0;
+		resizeTui.handleMouseEvent({ button: 35, x: 20, y: 3, release: false });
+		ok(mouseCalls.length === 1, "motion over the chat still reaches pi, so selection keeps working");
+
+		resizeTui.handleMouseEvent({ button: 35, x: 176 - 80 - 1, y: 3, release: false });
+		ok(mouseCalls.length === 1, "motion over the divider is ours");
+
+		draggable.dispose();
+		ok(resizeTerminal.columns === 176, "dispose gives the terminal its width back");
+		resizeTui.handleMouseEvent({ button: 0, x: 10, y: 1, release: false });
+		ok(mouseCalls.length === 2, "dispose restores pi's own mouse handler");
+	}
+
 	col.dispose();
 	ok(fakeTerminal.columns === before, `dispose restores the terminal width (${before})`);
 	ok(!col.mounted, "column reports itself unmounted");
@@ -371,6 +428,116 @@ for (const width of [28, 46, 100]) {
 	});
 	const refused = narrow.install();
 	ok(!refused.ok && /90/.test(refused.why), "refuses to split a narrow terminal (90 columns; need 100)");
+}
+
+// ── 6. the divider: a width the user chose ─────────────────────────────────
+//
+// The drag is the one thing here that cannot be reviewed by reading it, so the
+// geometry is a pure function and the assertions drive it with the raw button
+// mask pi actually delivers.
+{
+	const cols = 176;
+	ok(clampColumnWidth(10, cols) === 30, "a column cannot be dragged narrower than its floor");
+	ok(clampColumnWidth(500, cols) === cols - 60, "the chat keeps its 60 columns no matter how hard you pull");
+	ok(clampColumnWidth(Number.NaN, cols) === 30, "a nonsense width falls back to the floor, not to NaN");
+
+	const dividerX = cols - 50 - 1;
+	ok(dividerIntent({ cols, width: 50, x: dividerX, button: 35, release: false, dragging: false }).kind === "hover",
+		"motion over the divider is a hover (button 35 = motion, no button)");
+	ok(dividerIntent({ cols, width: 50, x: 20, button: 35, release: false, dragging: false }).kind === "none",
+		"motion over the chat is not ours — selection must keep working");
+	ok(dividerIntent({ cols, width: 50, x: dividerX, button: 0, release: false, dragging: false }).kind === "start",
+		"pressing on the divider starts a drag");
+	ok(dividerIntent({ cols, width: 50, x: dividerX, button: 0, release: true, dragging: false }).kind === "none",
+		"a click on the divider without moving does nothing yet");
+
+	const dragged = dividerIntent({ cols, width: 50, x: cols - 70 - 1, button: 32, release: false, dragging: true });
+	ok(dragged.kind === "drag" && dragged.width === 70, "dragging left widens the column to the pointer");
+	const ended = dividerIntent({ cols, width: 50, x: cols - 70 - 1, button: 0, release: true, dragging: true, candidate: 70 });
+	ok(ended.kind === "end" && ended.width === 70, "release commits the width the pointer was showing");
+	const pinned = dividerIntent({ cols, width: 50, x: 2, button: 32, release: false, dragging: true });
+	ok(pinned.kind === "drag" && pinned.width === cols - 60, "dragging past the limit pins it, it does not run away");
+
+	const sgr = parseSgrMouse("\x1b[<32;120;10M");
+	ok(sgr && sgr.button === 32 && sgr.x === 119 && sgr.y === 9 && !sgr.release, "SGR mouse decodes to 0-based cells");
+	ok(parseSgrMouse("\x1b[<0;1;1m")?.release === true, "the lowercase terminator is a release");
+	ok(parseSgrMouse("j") === null, "a keystroke is not a mouse report");
+}
+
+// ── 7. the width the user chose outlives the window ────────────────────────
+//
+// Written on release only (a drag would otherwise rewrite the file sixty times a
+// second), through a read-modify-write so keys this tool does not know survive.
+{
+	const home = mkdtempSync(join(tmpdir(), "toragents-policy-"));
+	const path = join(home, "policy.json");
+	writeFileSync(path, JSON.stringify({ receiver: "rowan", panel: { default: "strip", column: ["rowan"] }, keep: "me" }));
+	const previous = process.env.TORAGENTS_HOME;
+	process.env.TORAGENTS_HOME = home;
+	try {
+		ok(readPolicy(true).panel.width === 0, "an un-dragged width reads as 0, meaning 'no choice'");
+		ok(writePanelWidth(58) === true, "the chosen width is written");
+		const back = readPolicy(true);
+		ok(back.panel.width === 58, `the width comes back on the next read (got ${back.panel.width})`);
+		const raw = JSON.parse(require("node:fs").readFileSync(path, "utf8"));
+		ok(raw.receiver === "rowan" && raw.keep === "me", "the write preserves policy this module does not own");
+		ok(raw.panel.column[0] === "rowan", "and preserves the panel keys it does own");
+		writePanelWidth(0);
+		ok(readPolicy(true).panel.width === 0, "reset forgets the choice instead of freezing today's pixels");
+	} finally {
+		process.env.TORAGENTS_HOME = previous;
+	}
+}
+
+// ── 8. the footer: mailbox facts, never inferred ───────────────────────────
+//
+// The three things the transcript cannot express: a letter that never left, a
+// sender you do not know, a send that cannot be confirmed.
+{
+	const dir = mkdtempSync(join(tmpdir(), "toragents-facts-"));
+	mkdirSync(join(dir, "outbox"), { recursive: true });
+	mkdirSync(join(dir, "inbox"), { recursive: true });
+	mkdirSync(join(dir, "sent"), { recursive: true });
+	const now = Math.floor(Date.now() / 1000);
+	writeFileSync(join(dir, "outbox", "a.json"), JSON.stringify({
+		to: "kisu", attempts: 22, created: now - 4920, sent_id: null,
+		last_error: "exit 1: cannot reach tnhbv7cim4f after 4 attempts\nmore detail", body: "x".repeat(500),
+	}));
+	writeFileSync(join(dir, "outbox", "b.json"), JSON.stringify({
+		to: "kisu", attempts: 3, created: now - 60, sent_id: null, last_error: "exit 1: no", body: "y".repeat(300),
+	}));
+	writeFileSync(join(dir, "outbox", "done.json"), JSON.stringify({ to: "kisu", attempts: 1, created: now - 9000, sent_id: "abc" }));
+	writeFileSync(join(dir, "inbox", "m1.json"), JSON.stringify({ id: "m1", from_known: false, body: "who are you" }));
+	writeFileSync(join(dir, "inbox", "m2.json"), JSON.stringify({ id: "m2", from_known: true, body: "hello" }));
+	writeFileSync(join(dir, "sent", "s1.json"), JSON.stringify({ local_id: "s1", state: "unknown" }));
+	writeFileSync(join(dir, "sent", "s2.json"), JSON.stringify({ local_id: "s2", state: "acked" }));
+
+	const { readMailFacts } = await import("../_lib/toragents-transcript.ts");
+	const f = readMailFacts(dir);
+	ok(f.queued === 2, `only unsent letters are queued (got ${f.queued}; a delivered one is not pending)`);
+	ok(f.worstAttempts === 22 && f.worstPeer === "kisu", "the footer reports the letter that has tried hardest");
+	ok(f.lastError === "exit 1: cannot reach tnhbv7cim4f after 4 attempts", "the reason is the first line, not the whole manual");
+	ok(f.strangers === 1, "an unknown sender is counted, a known one is not");
+	ok(f.unsent === 1, "a send that cannot be confirmed is reported; an acknowledged one is not");
+	ok(f.oldestQueued !== null && f.oldestQueued > 4_000_000, "the queue's age is how long the peer has been dark");
+	ok(readMailFacts(join(dir, "does-not-exist")).queued === 0, "a missing mailbox reads as empty, not as a crash");
+
+	const lines = renderFooter(f, 60, null).join("\n");
+	ok(/outbox 2/.test(lines), "the footer shows the queue");
+	ok(/22 tries/.test(lines), "and how hard it has been trying");
+	ok(/unreachable/.test(lines) && /cannot reach/.test(lines), "and why, in the peer's own error words");
+	ok(/1 unknown sender/.test(lines) && /1 unconfirmed/.test(lines), "and the two facts a tick-mark would hide");
+	const narrow = renderFooter(f, 30, null);
+	ok(narrow.length < renderFooter(f, 60, null).length, "a narrow column drops detail instead of wrapping into noise");
+
+	const quiet = renderFooter({ ...f, queued: 0, strangers: 0, unsent: 0 }, 60, null);
+	ok(quiet.length === 0, "an empty mailbox says nothing at all");
+
+	const probe = { selected: 0, expanded: new Set<string>(), seen: new Set<string>(), focused: false, top: 0 };
+	const withoutFooter = renderColumn(rows, 46, 20, probe, null).lines;
+	const withFooter = renderColumn(rows, 46, 20, probe, null, f).lines;
+	ok(withFooter.length === 20, "the footer does not change the height it promises pi");
+	ok(/outbox/.test(withFooter.join("\n")) && !/outbox/.test(withoutFooter.join("\n")), "footer rows appear only when there are facts");
 }
 
 console.log(`\n${fails.length === 0 ? "ALL PASS" : "FAIL " + fails.length}`);
