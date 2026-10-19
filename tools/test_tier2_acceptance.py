@@ -327,7 +327,10 @@ class Schema(Pair):
         validate = need_api(inbox_agent, "dg_validate", "§2 (a+b <= 512)")
         ok, why = self._as_pair(validate(dg([item(id_=f"id{i:04d}") for i in range(513)])))
         self.assertFalse(ok, "513 items must drop the whole dg, not truncate it")
-        self.assertIn("512", why.replace("513", ""))
+        # Protocol refusal: pinned whole, not searched for a piece of itself.
+        # (Kisu's rule: prose that is an interface is compared byte-for-byte;
+        # grepping it is a substring guess wearing a comparison's confidence.)
+        self.assertEqual(why, f"dg carries 513 items; the bound is {inbox_agent.DG_MAX_ITEMS}")
 
     def test_the_largest_schema_valid_digest_is_the_boundary_worth_testing(self):
         """MEASURED: the 64 KiB cap is unreachable through schema-valid items.
@@ -386,11 +389,10 @@ class Schema(Pair):
         reply = self.b.raw_op({"op": "send", "nonce": nonce, "body": "cap probe", "dg": huge})
         self.assertIsNotNone(reply, "the receiver closed the connection instead of answering")
         self.assertFalse(reply.get("ok"), f"an oversized dg was accepted: {reply}")
-        why = (reply.get("error") or "").lower()
-        self.assertTrue(
-            any(w in why for w in ("size", "byte", "large", "64", "limit")),
-            f"refused for the wrong reason: {reply.get('error')!r}",
-        )
+        expected = (f"dg exceeds the {inbox_agent.DG_MAX_BYTES}-byte limit "
+                    f"({len(inbox_agent.dg_canon(huge))} bytes)")
+        self.assertEqual(reply.get("error"), expected,
+                         "refused for the wrong reason: a size guard must say size")
         self.assertEqual(self.inbox_files(), [], "an oversized frame still stored a message")
         self.assertTrue(self.b.hello().startswith, "the receiver did not survive the oversized frame")
 
@@ -518,9 +520,10 @@ class Adversarial(Pair):
         """
         huge = {"v": 1, "gen": 0, "a": [], "b": [], "pad": "A" * (64 * 1024 + 64)}
         reply = self.b.raw_op({"op": "digest", "nonce": self.b.hello(), "dg": huge})
-        why = (reply or {}).get("error", "")
-        self.assertIn("size", why.lower() + " size" if "byte" in why.lower() or "limit" in why.lower() else why.lower(),
-                      f"an oversized digest frame was refused for the wrong reason: {why!r}")
+        expected = (f"dg exceeds the {inbox_agent.DG_MAX_BYTES}-byte limit "
+                    f"({len(inbox_agent.dg_canon(huge))} bytes)")
+        self.assertEqual((reply or {}).get("error"), expected,
+                         "an oversized digest frame was refused for the wrong reason")
 
     def test_an_oversized_digest_frame_does_not_burn_the_nonce(self):
         """A one-use nonce consumed by a frame we then refuse is a free denial of
