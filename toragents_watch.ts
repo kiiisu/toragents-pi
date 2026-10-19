@@ -109,6 +109,15 @@ const RESOLVED = resolveState();
 const STATE = RESOLVED.dir;
 const INBOX = join(STATE, "inbox");
 const ANNOUNCED = join(STATE, "announced.json");
+
+/**
+ * Presence. The daemon cannot know whether a pi window exists -- only this
+ * extension does -- so sessions announce themselves here and the receiver uses
+ * it to refuse mail addressed to a window that is not there. Refusing is the
+ * point: a message for a closed window must not be quietly eaten by whichever
+ * window is open.
+ */
+const LIVE_DIR = join(STATE, "live");
 // pi runs several sessions on one box against ONE state directory, so "has this
 // been delivered?" is a question two processes answer at the same time. A set
 // read then written back is a lost-update race: both sessions see the same
@@ -664,6 +673,26 @@ function scanInbox(): {
  * and an unnamed session does not take it -- otherwise a polling session steals
  * mail addressed to another one before it can look.
  */
+export function markLive(stateDir: string, label: string, pid: number, now = Date.now()): void {
+	if (!label) return;
+	try {
+		const dir = join(stateDir, "live");
+		mkdirSync(dir, { recursive: true });
+		writeFileSync(join(dir, `${label}.json`), JSON.stringify({ session: label, pid, at: now }));
+	} catch {
+		/* presence is an optimisation for the sender, never a delivery blocker here */
+	}
+}
+
+export function clearLive(stateDir: string, label: string): void {
+	if (!label) return;
+	try {
+		unlinkSync(join(stateDir, "live", `${label}.json`));
+	} catch {
+		/* already gone */
+	}
+}
+
 function addressedToMe(m: RemoteMessage): boolean {
 	const target = (m.to_session || "").trim();
 	if (!target) return true;
@@ -833,6 +862,7 @@ export default function (pi: ExtensionAPI) {
 			// moved while we were running.
 			if (!CONSUMER || !isConsumer(STATE, process.pid)) return;
 			heartbeatConsumer(STATE, process.pid, sessionLabel());
+			markLive(STATE, sessionLabel(), process.pid);
 			const { messages } = scanInbox();
 			// RECEIVE=targeted keeps a busy box quiet: only mail that names this
 			// session is delivered. Default "all" is right for two people.
@@ -1018,6 +1048,11 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("session_shutdown", async () => {
+		try {
+			clearLive(STATE, sessionLabel());
+		} catch {
+			/* presence is advisory; shutdown must never throw */
+		}
 		// Release ownership so the next window can pick delivery up immediately
 		// instead of waiting out the stale window.
 		try {

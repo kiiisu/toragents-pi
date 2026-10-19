@@ -441,6 +441,18 @@ class Inbox:
             return {"ok": False, "error": "sender not on allowlist",
                     "fingerprint": fp}
 
+        # A message addressed to a window must not be silently consumed by
+        # whichever window happens to be open. Refuse and say the label, so the
+        # sender's receipt reports a fact instead of a cheerful "sent".
+        target_session = (req.get("to_session") or "").strip()
+        if target_session:
+            live = live_labels(self.state_dir)
+            if not live.get(target_session):
+                self.rejected += 1
+                return {"ok": False,
+                        "error": f"addressed to {target_session}, no live session on this box",
+                        "live_sessions": sorted(k for k, v in live.items() if v)}
+
         mid = uuid.uuid4().hex[:12]
         rec = {"id": mid, "received": time.time(), "from_fingerprint": fp,
                "from_label": peer.get("label", ""), "from_onion": peer.get("onion", ""),
@@ -1576,6 +1588,45 @@ def dg_build(rows_a=(), rows_b=(), now=None):
             b.append({"id": r["id"], "h": r["h"], "n": r["n"]})
     a, b = a[:DG_MAX_ITEMS], b[:DG_MAX_ITEMS - min(len(a), DG_MAX_ITEMS)]
     return {"v": 1, "gen": now if now is not None else time.time(), "a": a, "b": b}
+
+
+LIVE_STALE_MS = 90_000
+
+
+def live_labels(state_dir):
+    """Labels with a live pi session on THIS box.
+
+    Liveness lives in the extension -- only it knows a window exists -- so each
+    session writes state/live/<label>.json on start, refreshes it on every tick,
+    and removes it on shutdown. The daemon then judges liveness the same way it
+    judges the consumer lease: pid alive AND fresh. Judging only this box is
+    deliberate: a label living on another machine is correctly "not here".
+    """
+    d = os.path.join(state_dir, "live")
+    live = {}
+    if not os.path.isdir(d):
+        return live
+    now = time.time()
+    for name in os.listdir(d):
+        if not name.endswith(".json"):
+            continue
+        try:
+            with open(os.path.join(d, name)) as f:
+                rec = json.load(f)
+        except Exception:
+            continue
+        label = rec.get("session") or name[:-5]
+        age = now - float(rec.get("at") or 0)
+        pid = rec.get("pid")
+        alive = False
+        if isinstance(pid, int) and pid > 0:
+            try:
+                os.kill(pid, 0)
+                alive = True
+            except OSError:
+                alive = False
+        live[label] = alive and age < (LIVE_STALE_MS / 1000.0)
+    return live
 
 
 def _seen_path(state_dir):
