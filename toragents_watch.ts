@@ -46,7 +46,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync } from "node:fs";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -295,9 +295,73 @@ export function buildRegisterNote(stateDir: string, names: string[] = [], moves:
 export const CONSUMER_FILE = "consumer.json";
 export const CONSUMER_STALE_MS = 90_000;
 
+/**
+ * Policy: who is DELIVERED untargeted mail, as a designation rather than a race.
+ *
+ * Delivery ownership used to be first-come: whoever wrote consumer.json first held it
+ * until they died. That answers "who got there first", not "who should read this" --
+ * and a human who wants one window to be the front desk cannot say so. This reads an
+ * optional policy file; absent, unreadable or malformed means CURRENT BEHAVIOUR,
+ * because a missing config file must never be a behaviour change.
+ *
+ * Shape: { "receiver": "rowan", "fallbackToAnyone": true }
+ * `receiver` matches the pi session NAME (set via /name, readable as
+ * sessionManager.getSessionName()), not the session id -- names are what a human
+ * types, and `pi-<id>` is what the file already stores. Both are written, and the
+ * comparison prefers the name so the two cannot silently disagree.
+ */
+const POLICY_FILE = "policy.json";
+
+export function readPolicy(stateDir: string): {
+	receiver: string;
+	fallbackToAnyone: boolean;
+	loaded: boolean;
+} {
+	const fallback = { receiver: "", fallbackToAnyone: true, loaded: false };
+	try {
+		// Beside the state dir: <home>/policy.json, with <home>/state as stateDir.
+		const path = join(dirname(stateDir), POLICY_FILE);
+		const st = statSync(path);
+		const cached = POLICY_CACHE.get(path);
+		if (cached && cached.mtime === st.mtimeMs) return cached.value;
+		const raw = JSON.parse(readFileSync(path, "utf8"));
+		const value = {
+			receiver: String(raw?.receiver ?? "").trim(),
+			fallbackToAnyone: raw?.fallbackToAnyone !== false,
+			loaded: true,
+		};
+		POLICY_CACHE.set(path, { mtime: st.mtimeMs, value });
+		return value;
+	} catch {
+		return fallback;
+	}
+}
+const POLICY_CACHE = new Map<string, { mtime: number; value: any }>();
+
+/**
+ * May THIS window claim delivery? Pure, exported, and the only place the rule lives.
+ *
+ * A designated receiver always may. A non-receiver may not while a live designated
+ * receiver holds it -- and `fallbackToAnyone` (default true) lets anyone take over
+ * when the front desk is not there, because a closed window must not mute the channel.
+ */
+export function mayClaimOwnership(
+	meName: string,
+	prior: { name?: string; alive: boolean; fresh: boolean },
+	policy: { receiver: string; fallbackToAnyone: boolean } = { receiver: "", fallbackToAnyone: true },
+): boolean {
+	if (!policy.receiver) return true; // no designation: first-come, as before
+	if (meName && meName === policy.receiver) return true;
+	const receiverHolds = Boolean(
+		prior.alive && prior.fresh && prior.name && prior.name === policy.receiver,
+	);
+	if (receiverHolds) return false;
+	return policy.fallbackToAnyone;
+}
+
 export function electConsumer(
 	stateDir: string,
-	me: { pid: number; session: string },
+	me: { pid: number; session: string; name?: string },
 	now = Date.now(),
 ): { owner: string; tookOver: boolean; reason: string } {
 	const path = join(stateDir, CONSUMER_FILE);
@@ -316,18 +380,41 @@ export function electConsumer(
 		}
 	};
 	const fresh = prior && now - Number(prior.at || 0) < CONSUMER_STALE_MS;
-	if (prior && prior.pid !== me.pid && alive(Number(prior.pid)) && fresh) {
+	const priorAlive = Boolean(prior && alive(Number(prior.pid)));
+	const policy = readPolicy(stateDir);
+	if (
+		!mayClaimOwnership(
+			String(me.name || ""),
+			{ name: String(prior?.name || prior?.session || ""), alive: priorAlive, fresh: Boolean(fresh) },
+			policy,
+		)
+	) {
+		return {
+			owner: String(prior?.name || prior?.session || prior?.pid || ""),
+			tookOver: false,
+			reason: `designated receiver (${policy.receiver}) holds delivery`,
+		};
+	}
+	// A live owner normally keeps delivery -- unless I AM the designated receiver and
+	// they are not, in which case the designation outranks the race that got them
+	// there. Without this the receiver-cannot-be-displaced rule would leave the desk
+	// permanently locked out by whoever happened to start first.
+	const iAmReceiver = Boolean(policy.receiver && me.name === policy.receiver);
+	const priorIsReceiver = Boolean(policy.receiver && prior?.name === policy.receiver);
+	if (prior && prior.pid !== me.pid && priorAlive && fresh && !(iAmReceiver && !priorIsReceiver)) {
 		return { owner: String(prior.session || prior.pid), tookOver: false, reason: "another live session owns delivery" };
 	}
 	try {
 		mkdirSync(stateDir, { recursive: true });
-		writeFileSync(path, JSON.stringify({ pid: me.pid, session: me.session, at: now }));
+		// Both identifiers, because they answer different questions: `name` is what the
+		// designation compares, `session` is what the claim/probe paths already use.
+		writeFileSync(path, JSON.stringify({ pid: me.pid, session: me.session, name: me.name || "", at: now }));
 	} catch {
 		/* unwritable: fall back to behaving like the only session */
 		return { owner: me.session, tookOver: true, reason: "no consumer file (state unwritable)" };
 	}
 	const reason = !prior
-		? "first session to claim delivery"
+		? (policy.receiver ? `designated receiver (${policy.receiver}) claimed delivery` : "first session to claim delivery")
 		: prior.pid === me.pid
 			? "already ours"
 			: fresh
@@ -421,6 +508,17 @@ const ORPHAN_MS = 5 * 60 * 1000;
  * session_start, before the first poll, so claims always see the real answer.
  */
 let MY_SESSION = "";
+/**
+ * The session's NAME (what a human types via /name), which is what a designation in
+ * policy.json matches. Kept separate from the pi-<id> label on purpose: one is for
+ * people, one is for files, and silently using either for both is how a designation
+ * stops matching without anyone noticing.
+ */
+let MY_NAME = "";
+function sessionName(): string {
+	return MY_NAME;
+}
+
 function sessionLabel(): string {
 	// Never the literal "unknown": a claim has to say WHICH process holds it, or
 	// two unnamed windows look identical on disk and the orphan heal cannot tell
@@ -441,6 +539,17 @@ function resolveSession(ctx?: any): string {
 	// Fall back to the environment only when the context cannot answer.
 	const id = (own || process.env.PI_SESSION_ID || "").replace(/-/g, "");
 	return id ? `pi-${id.slice(0, 8)}` : "";
+}
+
+/** Read the session name from pi, tolerating its absence on older builds. */
+function resolveName(ctx?: any): string {
+	const explicit = (process.env.TORAGENTS_NAME || "").trim();
+	if (explicit) return explicit.slice(0, 64);
+	try {
+		return String(ctx?.sessionManager?.getSessionName?.() ?? "").trim().slice(0, 64);
+	} catch {
+		return "";
+	}
 }
 
 function failedIds(): Set<string> {
@@ -545,7 +654,20 @@ const MAX_BATCH = 5;
  * wrong on a box running a dozen sessions: untargeted mail used to reach every
  * one of them, so one peer talking at 20-second intervals flooded all of them.
  */
-const RECEIVE = (process.env.TORAGENTS_RECEIVE || "all").trim().toLowerCase();
+const RECEIVE_ENV = (process.env.TORAGENTS_RECEIVE || "").trim().toLowerCase();
+
+/**
+ * Untargeted mail goes to the designated receiver; everyone else takes only what is
+ * addressed to them. An explicit TORAGENTS_RECEIVE still wins, because an env var set
+ * on purpose is a decision and a policy default is only a default -- and a quiet box
+ * must stay quiescent without needing to name itself in a file.
+ */
+function receiveMode(name: string): string {
+	if (RECEIVE_ENV) return RECEIVE_ENV;
+	const policy = readPolicy(STATE);
+	if (policy.receiver) return name === policy.receiver ? "all" : "targeted";
+	return "all";
+}
 
 /** Set by /toragents-mute. Survives restarts, per session, no config file. */
 const MUTE_DIR = join(STATE, "muted");
@@ -923,7 +1045,7 @@ export default function (pi: ExtensionAPI) {
 			markLive(STATE, sessionLabel(), process.pid);
 			const { messages } = scanInbox();
 			const wanted = messages.filter((m) =>
-				wantsMessage(m, { owner, me: sessionLabel(), receive: RECEIVE }),
+				wantsMessage(m, { owner, me: sessionLabel(), receive: receiveMode(sessionName()) }),
 			);
 			const failed = new Set([...failedIds(), ...stuck]);
 			const fresh = wanted.filter(
@@ -991,11 +1113,16 @@ export default function (pi: ExtensionAPI) {
 
 		// Who we are, before anything writes a claim or a report.
 		MY_SESSION = resolveSession(ctx);
+		MY_NAME = resolveName(ctx);
 
 		// Delivery is owned by exactly one session. Every pi window on this box
 		// runs this extension; without an owner they race for the same inbox and
 		// messages surface in whichever window claimed first.
-		const election = electConsumer(STATE, { pid: process.pid, session: sessionLabel() });
+		const election = electConsumer(STATE, {
+			pid: process.pid,
+			session: sessionLabel(),
+			name: sessionName(),
+		});
 		CONSUMER = election.tookOver;
 		if (!CONSUMER) {
 			try {
@@ -1017,7 +1144,7 @@ export default function (pi: ExtensionAPI) {
 				INFO_FILE,
 				JSON.stringify({
 					session: sessionLabel(),
-					receive: RECEIVE,
+					receive: receiveMode(sessionName()),
 					state: STATE,
 					pid: process.pid,
 					at: Date.now(),
