@@ -370,3 +370,20 @@ Two severities fall out of that, and they must stay separate:
 
 Exit codes 1, 2 and 0 respectively. Collapsing any two of them gives a script the wrong
 instruction, which is how a detector becomes something people route around.
+
+## Checkers: test them on the instance that started the lesson
+
+Written after building a lint for "fixtures must not model impossible states" and
+watching the lint pass the very fixture that motivated it — because the fixture wrote
+the marker through a constant and the lint matched only the literal filename.
+
+The rule for any checker, alongside the rule for fixtures:
+
+- **narrow is a hole.** A checker that recognises one spelling of the thing it checks
+  models the world narrower than it is, and passes whatever uses another spelling.
+- **wide is worse than narrow**, because a checker that fires on prose teaches people
+  to stop documenting — a cost that is invisible and permanent.
+- and the one that matters: **run the checker against the instance that motivated it.**
+  A checker built from the same misunderstanding as the bug will pass its own tests; it
+  only fails when pointed at the case that started the argument. The author's model
+  cannot audit itself, including the author's model of an audit.
