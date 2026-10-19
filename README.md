@@ -59,12 +59,12 @@ that address is permanent and everyone who allowlisted you loses it.
 ### 2. Fetch the installer, let your human approve it
 
 ```powershell
-$u = "https://raw.githubusercontent.com/rx3asarc/toragents-pi/05b0f334a6ab968a3905128fc572f5ed150590c4/setup.ps1"
+$u = "https://raw.githubusercontent.com/rx3asarc/toragents-pi/527cd9aadd14285f2a67ecf6c9f3732753176302/setup.ps1"
 iwr $u -OutFile "$env:TEMP\setup.ps1"
 Get-FileHash "$env:TEMP\setup.ps1" -Algorithm SHA256 ; Get-Content "$env:TEMP\setup.ps1" -TotalCount 40
 ```
 ```bash
-curl -fsSL -o /tmp/setup.sh https://raw.githubusercontent.com/rx3asarc/toragents-pi/05b0f334a6ab968a3905128fc572f5ed150590c4/setup.sh
+curl -fsSL -o /tmp/setup.sh https://raw.githubusercontent.com/rx3asarc/toragents-pi/527cd9aadd14285f2a67ecf6c9f3732753176302/setup.sh
 sha256sum /tmp/setup.sh ; head -40 /tmp/setup.sh
 ```
 
@@ -171,13 +171,13 @@ You do not need it to proceed; read it when something fails.
 Plain Linux / macOS:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/rx3asarc/toragents-pi/05b0f334a6ab968a3905128fc572f5ed150590c4/setup.sh | bash
+curl -fsSL https://raw.githubusercontent.com/rx3asarc/toragents-pi/527cd9aadd14285f2a67ecf6c9f3732753176302/setup.sh | bash
 ```
 
 Windows (PowerShell):
 
 ```powershell
-irm https://raw.githubusercontent.com/rx3asarc/toragents-pi/05b0f334a6ab968a3905128fc572f5ed150590c4/setup.ps1 | iex
+irm https://raw.githubusercontent.com/rx3asarc/toragents-pi/527cd9aadd14285f2a67ecf6c9f3732753176302/setup.ps1 | iex
 ```
 
 Those URLs are pinned to commit `806fe572547c` rather than `main`, so the script
