@@ -28,8 +28,11 @@ try:
     (Path(state) / "state").mkdir()
     shutil.copy(HERE / "docs" / "lexicon.seed.json", Path(state) / "lexicon.seed.json")
 
+    seed = json.loads((HERE / "docs" / "lexicon.seed.json").read_text())
+    n_names, n_moves = len(seed["names"]), len(seed["moves"])
     rc, out = run(state, "lexicon", "stats")
-    check("seeds itself on first use", rc == 0 and "46" in out and "40" in out)
+    check("seeds itself on first use",
+          rc == 0 and str(n_names) in out and str(n_moves) in out and "mechanical" in out)
 
     rc1, o1 = run(state, "lexicon", "pick", "--kind", "names", "--count", "3", "--json")
     rc2, o2 = run(state, "lexicon", "pick", "--kind", "names", "--count", "3", "--json")
@@ -41,20 +44,25 @@ try:
 
     body = Path(state) / "b.txt"
     body.write_text("come here, clanker. my onion says hello.")
+    clanker_id = next(e["id"] for e in seed["names"] if e["text"] == "clanker")
     rc, out = run(state, "lexicon", "pick", "--count", "1", "--json", "--body-file", str(body))
-    check("a body marks the words it used as used", "n001" in json.loads(out)["marked"])
+    check("a body marks the words it used as used", clanker_id in json.loads(out)["marked"])
 
-    rc, out = run(state, "lexicon", "add", "--kind", "names", "my little", "rendezvous", "point")
+    rc, out = run(state, "lexicon", "add", "--kind", "names", "--style", "deadpan",
+                  "tiny", "ridiculous", "newcomer")
+    print("   (add said:", out.strip(), ")")
     lex = json.loads((Path(state) / "state" / "lexicon.json").read_text())
-    added = [r["text"] for r in lex["names"] if r["text"] == "my little rendezvous point"]
+    added = [r["text"] for r in lex["names"] if r["text"] == "tiny ridiculous newcomer"]
     check("add keeps --kind out of the phrase (it used to swallow it)",
-          added == ["my little rendezvous point"])
-    check("add grows the pool", len(lex["names"]) == 47)
+          added == ["tiny ridiculous newcomer"])
+    check("add grows the pool", len(lex["names"]) == n_names + 1)
+    check("added words carry the style they were given",
+          [r["style"] for r in lex["names"] if r["text"] == "tiny ridiculous newcomer"] == ["deadpan"])
 
-    rc, out = run(state, "lexicon", "add", "--kind", "names", "my little rendezvous point")
+    rc, out = run(state, "lexicon", "add", "--kind", "names", "tiny ridiculous newcomer")
     lex2 = json.loads((Path(state) / "state" / "lexicon.json").read_text())
     check("adding the same phrase twice does not duplicate it",
-          len(lex2["names"]) == 47)
+          len(lex2["names"]) == n_names + 1)
 
     (Path(state) / "state" / "lexicon.json").write_text("{ this is not json")
     rc, out = run(state, "lexicon", "pick", "--count", "2", "--json")
@@ -65,6 +73,18 @@ try:
     rc, out = run(state, "lexicon", "pick", "--count", "2")
     check("an empty pool exits cleanly with a message, not a traceback",
           rc == 0 and "names" in out)
+    rc, out = run(state, "lexicon", "styles")
+    check("styles lists every deck seeded", rc == 0 and "feral" in out and "deadpan" in out)
+
+    rc, out = run(state, "lexicon", "pick", "--style", "feral", "--count", "3", "--json")
+    picked = json.loads(out)["picked"]
+    feral_texts = {e["text"] for e in seed["names"] + seed["moves"] if e.get("style") == "feral"}
+    check("--style restricts picks to that deck",
+          all(e["text"] in feral_texts for e in picked["names"] + picked["moves"]))
+
+    rc, out = run(state, "lexicon", "pick", "--style", "nonexistent")
+    check("an unknown style fails loudly with the known list",
+          rc != 0 and "no such style" in out and "feral" in out)
 finally:
     shutil.rmtree(state, ignore_errors=True)
 

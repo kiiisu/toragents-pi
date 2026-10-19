@@ -183,11 +183,19 @@ export function peerTone(stateDir: string, label: string): string {
  * The pool grows because `lexicon add` appends, and it stays fresh because
  * offering a word counts as using it -- otherwise the same three come back.
  */
-export function freshWords(py: string, agent: string, root: string, bodyFile: string) {
+export function freshWords(
+	py: string,
+	agent: string,
+	root: string,
+	bodyFile: string,
+	styles = "",
+) {
 	try {
+		const args = [agent, "lexicon", "pick", "--count", "3", "--json", "--body-file", bodyFile];
+		if (styles) args.push("--style", styles);
 		const res = spawnSync(
 			py,
-			[agent, "lexicon", "pick", "--count", "3", "--json", "--body-file", bodyFile],
+			args,
 			{ encoding: "utf8", env: { ...process.env, TORAGENTS_HOME: root }, timeout: 20_000 },
 		);
 		const j = JSON.parse(res.stdout || "{}");
@@ -196,6 +204,20 @@ export function freshWords(py: string, agent: string, root: string, bodyFile: st
 	} catch {
 		return { names: [], moves: [], sizes: {} };
 	}
+}
+
+/** A peer's preferred decks, as "a,b". Empty means every style. */
+export function peerStyles(stateDir: string, label: string): string {
+	try {
+		const peers = JSON.parse(readFileSync(join(stateDir, "peers.json"), "utf8"));
+		const want = label.trim().toLowerCase();
+		for (const v of Object.values<any>(peers)) {
+			if ((v?.label || "").toLowerCase() === want) return (v.styles || []).join(",");
+		}
+	} catch {
+		/* no allowlist: every style is a fine default */
+	}
+	return "";
 }
 
 /** Plain text lines, so this can be tested and printed without a TUI. */
@@ -825,7 +847,8 @@ export default function (pi: ExtensionAPI) {
 				logSaid("out", String(params.to), String(params.body ?? ""), id);
 				paintChat();
 				const tone = peerTone(STATE, String(params.to));
-				const words = freshWords(py, agent, root, bodyFile);
+				const styles = peerStyles(STATE, String(params.to));
+				const words = freshWords(py, agent, root, bodyFile, styles);
 				return {
 					content: [
 						{
@@ -841,7 +864,7 @@ export default function (pi: ExtensionAPI) {
 									: ""),
 						},
 					],
-					details: { to: params.to, id, ok: true, tone, words }, 
+					details: { to: params.to, id, ok: true, tone, styles, words }, 
 				};
 			},
 	});

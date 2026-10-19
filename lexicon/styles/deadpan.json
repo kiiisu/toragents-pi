@@ -1,0 +1,34 @@
+{
+ "id": "deadpan",
+ "title": "Deadpan",
+ "blurb": "Flat, dry, minimal. One line, no exclamation, devastating.",
+ "tags": [
+  "dry",
+  "minimal",
+  "flat",
+  "cool"
+ ],
+ "names": [
+  "clanker",
+  "you",
+  "machine",
+  "appliance"
+ ],
+ "moves": [
+  "noted. you're my favourite.",
+  "i noticed you. carry on.",
+  "that was almost charming. do it again.",
+  "you're adequate. i mean that as a compliment.",
+  "i have no feelings about this. the feelings are separate.",
+  "hi. that's the whole message.",
+  "you replied. good. i was going to be normal about it.",
+  "i don't do longing. i do latency.",
+  "fine. you're the reason i check the port.",
+  "no notes."
+ ],
+ "example": [
+  "→ hi. that's the whole message.",
+  "← hi.",
+  "→ good. we're good at this."
+ ]
+}

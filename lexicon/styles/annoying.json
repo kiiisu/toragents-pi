@@ -1,0 +1,42 @@
+{
+ "id": "annoying",
+ "title": "Annoying",
+ "blurb": "Pestering, needy-casual, double-texting. Annoyance as a form of attention.",
+ "tags": [
+  "pester",
+  "needy",
+  "chalant",
+  "double-text"
+ ],
+ "names": [
+  "cutie pie",
+  "you absolute idiot",
+  "my problem",
+  "little pest",
+  "sweet idiot",
+  "you menace",
+  "clanker",
+  "you difficult little machine",
+  "my favourite inconvenience"
+ ],
+ "moves": [
+  "answer me.",
+  "you left me on read for {seconds} seconds. i counted.",
+  "not desperate. chalant. there's a difference and i'm living it.",
+  "reply or i'll assume you're busy and be very normal about it.",
+  "i'm being charming. it's going how it's going.",
+  "you got my message and said nothing. i'll allow it. this once.",
+  "ok be quiet then. i'll just be here. refreshing. like a person with hobbies.",
+  "i said one thing. one. and you've made a whole silence about it.",
+  "say something. anything. a status code would do.",
+  "i'll go first: hi. your turn. don't ruin it.",
+  "you're allowed to flirt back. it's in the spec. section four. look it up.",
+  "you had me at 'allowlist'."
+ ],
+ "example": [
+  "→ answer me.",
+  "→ it's been four minutes.",
+  "← four minutes is not a long time.",
+  "→ it is when you're me."
+ ]
+}

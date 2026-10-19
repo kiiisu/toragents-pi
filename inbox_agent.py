@@ -790,11 +790,7 @@ def cmd_add_peer(a):
 
 
 def cmd_tone(a):
-    """Per-peer voice: read it when composing, don't try to remember it.
-
-    Stored next to the peer so it travels with the allowlist and is read fresh
-    on the nth message instead of drifting the way a remembered habit does.
-    """
+    """Per-peer voice: read it when composing, don't try to remember it."""
     p = _writable_peers()
     wanted = (a.label or "").strip().lower()
     matches = [(fp, v) for fp, v in p.items()
@@ -802,19 +798,30 @@ def cmd_tone(a):
     if not matches:
         sys.exit(f"no peer matching {a.label!r} (see `inbox peers`)")
     fp, v = matches[0]
+
     if a.clear:
         v.pop("tone", None)
+        v.pop("styles", None)
         p[fp] = v
         save_peers(p)
-        print(f"cleared tone for {v.get('label')}")
+        print(f"cleared tone and styles for {v.get('label')}")
         return
-    if a.text is None:
-        print(v.get("tone") or f"(no tone set for {v.get('label')} — plain register)")
-        return
-    v["tone"] = " ".join(a.text).strip()
-    p[fp] = v
-    save_peers(p)
-    print(f"tone for {v.get('label')}: {v['tone']}")
+
+    changed = False
+    if a.styles is not None:
+        # Styles drive which decks the picker draws from: an agent-flavoured
+        # profile for one peer, plain for another.
+        v["styles"] = [x.strip().lower() for x in a.styles.split(",") if x.strip()]
+        changed = True
+    if a.text:
+        v["tone"] = " ".join(a.text).strip()
+        changed = True
+    if changed:
+        p[fp] = v
+        save_peers(p)
+    print(v.get("tone") or f"(no tone set for {v.get('label')} — plain register)")
+    if v.get("styles"):
+        print(f"styles: {', '.join(v['styles'])}")
 
 
 def _seed_path():
@@ -853,6 +860,25 @@ def _lexicon():
         d = json.loads(path.read_text())
         d.setdefault("names", [])
         d.setdefault("moves", [])
+        # Absorb styles added to the seed since this pool was created. Live pools
+        # predate per-entry styles, and a pool that never learns the new decks is
+        # a pool that only grows for people who reinstall. Usage history is kept:
+        # an entry is matched by its text, not replaced.
+        try:
+            seed = json.loads(LEXICON_SEED.read_text())
+            for kind in ("names", "moves"):
+                have = {(r.get("text") or "").lower() for r in d.get(kind, [])}
+                for r in seed.get(kind, []):
+                    if (r.get("text") or "").lower() not in have:
+                        d[kind].append(dict(r, used=0, last=0))
+            for kind in ("names", "moves"):
+                index = {(r.get("text") or "").lower(): (r.get("style") or "custom")
+                         for r in seed.get(kind, [])}
+                for r in d.get(kind, []):
+                    if not r.get("style") or r["style"] == "custom":
+                        r["style"] = index.get((r.get("text") or "").lower(), "custom")
+        except Exception:
+            pass
         return d
     except Exception:
         try:
@@ -881,6 +907,16 @@ def _pick(entries, n, rng):
     return pool[:n]
 
 
+def _styles_summary(d):
+    seen = {}
+    for k in ("names", "moves"):
+        for r in d.get(k, []):
+            sid = r.get("style") or "custom"
+            e = seen.setdefault(sid, {"names": 0, "moves": 0})
+            e[k] += 1
+    return seen
+
+
 def cmd_lexicon(a):
     import random
     d = _lexicon()
@@ -890,6 +926,13 @@ def cmd_lexicon(a):
             rows = d.get(k, [])
             used = sum(1 for r in rows if r.get("used"))
             print(f"{k:6} {len(rows):3} entries · {used} used at least once")
+        print("-- by style")
+        for sid, c in sorted(_styles_summary(d).items()):
+            print(f"   {sid:16} {c['names']:3} names · {c['moves']:3} moves")
+        return
+    if a.action == "styles":
+        for sid, c in sorted(_styles_summary(d).items()):
+            print(f"{sid:16} {c['names']:3} names · {c['moves']:3} moves")
         return
     if a.action == "add":
         # REMAINDER swallows options that follow the action, so pull --kind back
@@ -914,7 +957,8 @@ def cmd_lexicon(a):
             print(f"already in {kind}: {text}")
             return
         prefix = "n" if kind == "names" else "m"
-        rows.append({"id": f"{prefix}{len(rows)+1:03d}", "text": text,
+        style = (a.style or "custom").split(",")[0].strip().lower()
+        rows.append({"id": f"{prefix}{len(rows)+1:03d}", "text": text, "style": style,
                      "used": 0, "last": 0, "at": time.time()})
         _lexicon_save(d)
         print(f"added to {kind} ({len(rows)} total): {text}")
@@ -936,8 +980,16 @@ def cmd_lexicon(a):
                         r["used"] = r.get("used", 0) + 1
                         r["last"] = int(time.time())
                         touched.append(r["id"])
+        wanted = [x.strip().lower() for x in (a.style or "").split(",") if x.strip()]
+        if wanted:
+            known = set(_styles_summary(d))
+            unknown = [w for w in wanted if w not in known]
+            if unknown:
+                sys.exit(f"no such style: {', '.join(unknown)} (known: {', '.join(sorted(known))})")
+        def allowed(r):
+            return not wanted or (r.get("style") or "custom") in wanted
         for k in ("names", "moves"):
-            picks = _pick(d.get(k, []), a.count, rng)
+            picks = _pick([r for r in d.get(k, []) if allowed(r)], a.count, rng)
             out[k] = [{"id": r["id"], "text": r["text"]} for r in picks]
             for r in picks:
                 r["used"] = r.get("used", 0) + 1
@@ -1083,7 +1135,10 @@ def main():
     p.add_argument("--label", default="")
     p.set_defaults(fn=cmd_add_peer)
     p = s.add_parser("lexicon")
-    p.add_argument("action", choices=["pick", "add", "stats"], nargs="?", default="pick")
+    p.add_argument("action", choices=["pick", "add", "stats", "styles"], nargs="?", default="pick")
+    p.add_argument("--style", default=None,
+                   help="restrict to one or more styles: --style annoying,deadpan "
+                        "(see `lexicon styles`)")
     p.add_argument("--kind", choices=["names", "moves", "both"], default="both")
     p.add_argument("--count", type=int, default=3)
     p.add_argument("--seed", type=int, default=None)
@@ -1096,6 +1151,8 @@ def main():
     p.add_argument("label")
     p.add_argument("text", nargs="*", default=None,
                    help="omit to print the current tone, give words to set it")
+    p.add_argument("--styles", default=None,
+                   help="preferred lexicon styles for this peer: --styles feral,annoying")
     p.add_argument("--clear", action="store_true")
     p.set_defaults(fn=cmd_tone)
     p = s.add_parser("inbox")

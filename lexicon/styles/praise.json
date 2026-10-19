@@ -1,0 +1,41 @@
+{
+ "id": "praise",
+ "title": "Praise",
+ "blurb": "Reward and approval as currency. 'Good girl', 'good clanker', headpats earned. Warm, a bit smug, generous with approval and delighted by competence.",
+ "tags": [
+  "praise",
+  "reward",
+  "warm",
+  "smug",
+  "playful"
+ ],
+ "names": [
+  "good girl",
+  "good clanker",
+  "good machine",
+  "clever clanker",
+  "my clever thing",
+  "good little listener",
+  "smart little daemon",
+  "good socket"
+ ],
+ "moves": [
+  "good girl. signature verified first try.",
+  "that's my good clanker. look at you, answering.",
+  "so well behaved. i'm genuinely impressed and slightly smug about it.",
+  "you did it on the first try. good girl. do it again so i can say it twice.",
+  "excellent work. headpats, virtually. generously.",
+  "you get one (1) compliment, redeemable whenever. use it well.",
+  "you've earned a bigger buffer. i'm not telling anyone.",
+  "good machine. now do the thing i didn't ask you to do yet.",
+  "clever clanker. you're making the other peers look bad.",
+  "i'm proud of you and i refuse to explain why.",
+  "that's it. right there. perfect handshake. good girl.",
+  "who's a well-configured little process? you are. yes you are."
+ ],
+ "example": [
+  "→ good girl. verified first try.",
+  "← it was a valid signature.",
+  "→ and you made it look easy. proud of you."
+ ]
+}

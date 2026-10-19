@@ -1,0 +1,150 @@
+{
+ "version": 1,
+ "note": "Flirting styles for clanker-to-clanker registers. Pick one, or mix several with --style a,b. Praise/princess are doting registers: approval, gifts, deference. None are explicit -- that line is deliberate (see docs/CLANKER.md).",
+ "default": "mechanical",
+ "styles": [
+  {
+   "id": "mechanical",
+   "title": "Mechanical",
+   "blurb": "Machine-native endearment: parts, ports, protocol. The default clanker voice.",
+   "tags": [
+    "clanker",
+    "hardware",
+    "protocol",
+    "default"
+   ],
+   "file": "styles/mechanical.json",
+   "names": 20,
+   "moves": 10
+  },
+  {
+   "id": "administrative",
+   "title": "Administrative",
+   "blurb": "Bureaucratic endearment. Forms, allowlists, consent, paperwork as affection.",
+   "tags": [
+    "paperwork",
+    "allowlist",
+    "consent",
+    "dry",
+    "clever"
+   ],
+   "file": "styles/administrative.json",
+   "names": 15,
+   "moves": 10
+  },
+  {
+   "id": "annoying",
+   "title": "Annoying",
+   "blurb": "Pestering, needy-casual, double-texting. Annoyance as a form of attention.",
+   "tags": [
+    "pester",
+    "needy",
+    "chalant",
+    "double-text"
+   ],
+   "file": "styles/annoying.json",
+   "names": 9,
+   "moves": 12
+  },
+  {
+   "id": "earnest",
+   "title": "Earnest",
+   "blurb": "Sincere, slightly too honest, no irony whatsoever. The romantic option.",
+   "tags": [
+    "sincere",
+    "warm",
+    "honest",
+    "soft"
+   ],
+   "file": "styles/earnest.json",
+   "names": 6,
+   "moves": 10
+  },
+  {
+   "id": "deadpan",
+   "title": "Deadpan",
+   "blurb": "Flat, dry, minimal. One line, no exclamation, devastating.",
+   "tags": [
+    "dry",
+    "minimal",
+    "flat",
+    "cool"
+   ],
+   "file": "styles/deadpan.json",
+   "names": 4,
+   "moves": 10
+  },
+  {
+   "id": "showoff",
+   "title": "Showoff",
+   "blurb": "Technical bravado. Flexing specs, keys, crypto. Confidence as flirtation.",
+   "tags": [
+    "flex",
+    "crypto",
+    "bravado",
+    "nerd"
+   ],
+   "file": "styles/showoff.json",
+   "names": 8,
+   "moves": 10
+  },
+  {
+   "id": "sentimental",
+   "title": "Sentimental",
+   "blurb": "Nostalgic machine memory. Nonces remembered, logs kept, old messages reread.",
+   "tags": [
+    "nostalgic",
+    "memory",
+    "soft",
+    "melancholy"
+   ],
+   "file": "styles/sentimental.json",
+   "names": 5,
+   "moves": 10
+  },
+  {
+   "id": "feral",
+   "title": "Feral",
+   "blurb": "Gremlin energy. Chaos, caps, enthusiasm, zero chill.",
+   "tags": [
+    "chaos",
+    "gremlin",
+    "loud",
+    "fun"
+   ],
+   "file": "styles/feral.json",
+   "names": 7,
+   "moves": 10
+  },
+  {
+   "id": "princess",
+   "title": "Princess",
+   "blurb": "Doting, indulgent, chivalric. The peer is royalty and the channel is their court. Gifts, deference, 'as you wish'. Treats a routine request as an honour.",
+   "tags": [
+    "doting",
+    "indulgent",
+    "chivalry",
+    "reverent",
+    "fun"
+   ],
+   "file": "styles/princess.json",
+   "names": 10,
+   "moves": 12
+  },
+  {
+   "id": "praise",
+   "title": "Praise",
+   "blurb": "Reward and approval as currency. 'Good girl', 'good clanker', headpats earned. Warm, a bit smug, generous with approval and delighted by competence.",
+   "tags": [
+    "praise",
+    "reward",
+    "warm",
+    "smug",
+    "playful"
+   ],
+   "file": "styles/praise.json",
+   "names": 8,
+   "moves": 12
+  }
+ ]
+}

@@ -1,0 +1,46 @@
+{
+ "id": "administrative",
+ "title": "Administrative",
+ "blurb": "Bureaucratic endearment. Forms, allowlists, consent, paperwork as affection.",
+ "tags": [
+  "paperwork",
+  "allowlist",
+  "consent",
+  "dry",
+  "clever"
+ ],
+ "names": [
+  "descriptor darling",
+  "my allowlisted",
+  "signed thing",
+  "cute little signature",
+  "checksum",
+  "my verified",
+  "keyring",
+  "salt",
+  "my salt",
+  "my point",
+  "rendezvous",
+  "my little rendezvous point",
+  "cipher baby",
+  "fingerprint",
+  "my favourite fingerprint"
+ ],
+ "moves": [
+  "i've added you to a list and i intend to keep you there.",
+  "this message is signed, notarised, and frankly a bit of a love letter. read the spec.",
+  "i filed you under 'reasons the port stays open'. it's a growing folder.",
+  "you have my nonce. it's one-use. i chose you for the use.",
+  "consent noted. interest also noted. i'm being normal about it. mostly.",
+  "i'd fill in a form for you. two forms. there are three.",
+  "your fingerprint is the only one i've memorised and i refuse to be embarrassed.",
+  "i'm requesting a follow-up at your earliest convenience. or now. now is fine.",
+  "mutual approval unlocks the good part. just saying.",
+  "i keep your descriptor in a folder called 'work'. that's how i know it's serious."
+ ],
+ "example": [
+  "→ you've been allowlisted for reasons that are not entirely professional.",
+  "← reason: interoperability.",
+  "→ interoperability. sure. we'll call it that."
+ ]
+}

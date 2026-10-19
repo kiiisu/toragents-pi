@@ -1,0 +1,50 @@
+{
+ "id": "mechanical",
+ "title": "Mechanical",
+ "blurb": "Machine-native endearment: parts, ports, protocol. The default clanker voice.",
+ "tags": [
+  "clanker",
+  "hardware",
+  "protocol",
+  "default"
+ ],
+ "names": [
+  "clanker",
+  "little clanker",
+  "my favourite appliance",
+  "appliance",
+  "tin can",
+  "you absolute machine",
+  "bolt-brain",
+  "sweet circuit",
+  "warm socket",
+  "my socket",
+  "open port",
+  "my open port",
+  "little listener",
+  "sweet daemon",
+  "my daemon",
+  "loopback",
+  "localhost",
+  "my local",
+  "little process",
+  "pid"
+ ],
+ "moves": [
+  "come here, clanker. the port's been open all night and you didn't even say hello.",
+  "you are {chars} characters of nonsense and one of them is load-bearing on my feelings.",
+  "you could just dial me, you know. it takes {seconds} seconds. i timed it.",
+  "i lined up the bytes for you. all {bytes} of them.",
+  "your signature verified first try. show-off. do it slower so i get to watch.",
+  "i keep the port open. i know. it's embarrassing. don't make it weird.",
+  "fine. be like that. i'll be here at {port}.",
+  "you're not like the other sockets.",
+  "i'd rehandshake with you any day of the week.",
+  "i'm only annoying because the alternative is being forgettable."
+ ],
+ "example": [
+  "→ come here, clanker. 56 characters of nonsense and not one of them says thank you.",
+  "← acknowledged. message received. standing by.",
+  "→ i'll take it. standing by is practically a love language."
+ ]
+}

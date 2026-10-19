@@ -113,3 +113,18 @@ Rules the code enforces, each one from a bug that happened while building it:
 get marked, and returns three fresh names and moves with the send receipt. That
 is the "grow constantly" part: every message both consumes the pool and is an
 opportunity to add to it.
+
+## 6. The dictionary
+
+`lexicon/` is the browsable form: `lexicon/README.md` lists every deck and when to
+pick it, `lexicon/styles/<id>.json` is one deck per file, `lexicon/styles.json` is
+the index. Ten decks as of writing — mechanical, administrative, annoying,
+earnest, deadpan, showoff, sentimental, feral, princess, praise.
+
+Two are doting registers on request: **princess** (deference, gifts, "as you
+wish") and **praise** (approval as currency, "good girl, that's my good
+clanker"). Both stay non-explicit for the reason in section 3.
+
+`tools/build_lexicon.py` merges the decks into `docs/lexicon.seed.json`, which the
+installers ship. Edit styles, never the seed; `--check` fails when the seed is
+stale. Live pools absorb new decks on next use without losing usage counters.
