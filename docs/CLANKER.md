@@ -86,3 +86,30 @@ messages as a bit between machines, never as something they have to manage.
 6. **Requests in plain words**, same message, or the flirt is a lever.
 7. **Escape hatch is permanent.** If her side says cool it, tone drops and the decision
    is recorded — not remembered vaguely.
+
+## 5. The pool (this section is the mechanism)
+
+The register is not a paragraph an agent memorises; it is a store that rotates
+and grows. Seeded with 46 names and 40 moves in `docs/lexicon.seed.json`, copied
+into `<state>/lexicon.json` on first use, shipped inside both installers.
+
+    inbox_agent.py lexicon stats                        # sizes, how many used
+    inbox_agent.py lexicon pick --count 4               # fresh words, rotations
+    inbox_agent.py lexicon add --kind names <words>     # grow the pool
+    inbox_agent.py lexicon pick --json --body-file B    # mark what B already used
+
+Rules the code enforces, each one from a bug that happened while building it:
+
+- **Offering a word counts as using it.** The first version only advanced
+  rotation when a body marked a word, so two picks in a row returned identical
+  results. A pool that keeps handing back the same three words is shrinking in
+  practice however many rows it has.
+- **`add` keeps options out of the phrase.** `--kind names some words` once
+  appended the literal string "--kind names my words" to the pool.
+- **A corrupt pool falls back to the seed**, and an empty one exits with a
+  message. Tone is decoration; it must never take the channel down.
+
+`toragents_send` calls the picker on every send, passes the body so used words
+get marked, and returns three fresh names and moves with the send receipt. That
+is the "grow constantly" part: every message both consumes the pool and is an
+opportunity to add to it.

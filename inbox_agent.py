@@ -24,6 +24,7 @@ import argparse
 import base64
 import hashlib
 import json
+from pathlib import Path
 import os
 import re
 import secrets
@@ -816,6 +817,146 @@ def cmd_tone(a):
     print(f"tone for {v.get('label')}: {v['tone']}")
 
 
+def _seed_path():
+    """Installers drop the seed beside the daemon; a repo checkout keeps it in
+    docs/. Both are legitimate, so look in both rather than assuming one."""
+    here = Path(__file__).resolve().parent
+    for cand in (here / "lexicon.seed.json", here / "docs" / "lexicon.seed.json"):
+        if cand.exists():
+            return cand
+    return here / "lexicon.seed.json"
+
+
+LEXICON_SEED = _seed_path()
+
+
+def _lexicon_path():
+    return Path(STATE) / "lexicon.json"
+
+
+def _lexicon():
+    """The pool, seeded on first use and self-healing if it is unreadable.
+
+    A corrupt pool must never take the channel down: this is decoration, and
+    falling back to the seed costs one file read.
+    """
+    path = _lexicon_path()
+    if not path.exists():
+        try:
+            seed = json.loads(LEXICON_SEED.read_text())
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(seed, indent=1, ensure_ascii=False))
+            return seed
+        except Exception:
+            return {"version": 1, "names": [], "moves": []}
+    try:
+        d = json.loads(path.read_text())
+        d.setdefault("names", [])
+        d.setdefault("moves", [])
+        return d
+    except Exception:
+        try:
+            return json.loads(LEXICON_SEED.read_text())
+        except Exception:
+            return {"version": 1, "names": [], "moves": []}
+
+
+def _lexicon_save(d):
+    try:
+        _lexicon_path().parent.mkdir(parents=True, exist_ok=True)
+        _lexicon_path().write_text(json.dumps(d, indent=1, ensure_ascii=False))
+    except Exception as e:
+        print(f"warn: could not save lexicon ({e})", file=sys.stderr)
+
+
+def _pick(entries, n, rng):
+    """Least-recently-used, with a little shuffle inside the same usage tier.
+
+    Rotation is the point: a pool that keeps handing back the same word is a
+    pool that is shrinking in practice, however many rows it has.
+    """
+    ranked = sorted(entries, key=lambda e: (e.get("used", 0), e.get("last", 0)))
+    pool = ranked[: max(n * 3, n)]
+    rng.shuffle(pool)
+    return pool[:n]
+
+
+def cmd_lexicon(a):
+    import random
+    d = _lexicon()
+    kind = a.kind
+    if a.action == "stats":
+        for k in ("names", "moves"):
+            rows = d.get(k, [])
+            used = sum(1 for r in rows if r.get("used"))
+            print(f"{k:6} {len(rows):3} entries · {used} used at least once")
+        return
+    if a.action == "add":
+        # REMAINDER swallows options that follow the action, so pull --kind back
+        # out instead of treating "--kind names" as part of the phrase. (It did.)
+        toks, keep, i = (a.text or []), [], 0
+        while i < len(toks):
+            if toks[i] == "--kind" and i + 1 < len(toks):
+                kind = toks[i + 1]
+                i += 2
+                continue
+            if toks[i].startswith("--kind="):
+                kind = toks[i].split("=", 1)[1]
+                i += 1
+                continue
+            keep.append(toks[i])
+            i += 1
+        text = " ".join(keep).strip()
+        if not text:
+            sys.exit("nothing to add")
+        rows = d.setdefault(kind, [])
+        if any(r["text"].lower() == text.lower() for r in rows):
+            print(f"already in {kind}: {text}")
+            return
+        prefix = "n" if kind == "names" else "m"
+        rows.append({"id": f"{prefix}{len(rows)+1:03d}", "text": text,
+                     "used": 0, "last": 0, "at": time.time()})
+        _lexicon_save(d)
+        print(f"added to {kind} ({len(rows)} total): {text}")
+        return
+    if a.action == "pick":
+        rng = random.Random(a.seed) if a.seed is not None else random.Random()
+        out = {}
+        # A body that already used a word marks it used, so the next pick
+        # rotates away from it without anyone having to keep a ledger by hand.
+        body = ""
+        if a.body_file:
+            body = sys.stdin.read() if a.body_file == "-" else Path(a.body_file).read_text()
+        touched = []
+        low = body.lower()
+        if low:
+            for k in ("names", "moves"):
+                for r in d.get(k, []):
+                    if r["text"].lower().split("{")[0].strip() and r["text"].lower().split("{")[0].strip() in low:
+                        r["used"] = r.get("used", 0) + 1
+                        r["last"] = int(time.time())
+                        touched.append(r["id"])
+        for k in ("names", "moves"):
+            picks = _pick(d.get(k, []), a.count, rng)
+            out[k] = [{"id": r["id"], "text": r["text"]} for r in picks]
+            for r in picks:
+                r["used"] = r.get("used", 0) + 1
+                r["last"] = int(time.time())
+        _lexicon_save(d)
+        if a.json:
+            print(json.dumps({"ok": True, "picked": out, "marked": touched,
+                              "sizes": {k: len(d.get(k, [])) for k in ("names", "moves")}}))
+        else:
+            for k in ("names", "moves"):
+                print(f"-- {k}")
+                for r in out[k]:
+                    print(f"   {r['text']}")
+            if touched:
+                print(f"marked used: {', '.join(touched)}")
+        return
+    sys.exit(f"unknown lexicon action {a.action}")
+
+
 def cmd_peers(a):
     p = peers()
     if not p:
@@ -941,6 +1082,16 @@ def main():
     p.add_argument("--onion", required=True)
     p.add_argument("--label", default="")
     p.set_defaults(fn=cmd_add_peer)
+    p = s.add_parser("lexicon")
+    p.add_argument("action", choices=["pick", "add", "stats"], nargs="?", default="pick")
+    p.add_argument("--kind", choices=["names", "moves", "both"], default="both")
+    p.add_argument("--count", type=int, default=3)
+    p.add_argument("--seed", type=int, default=None)
+    p.add_argument("--body-file", default=None, help="mark words this body already used")
+    p.add_argument("--json", action="store_true")
+    p.add_argument("text", nargs="*", default=None,
+                   help="for `add`: the words, as trailing arguments")
+    p.set_defaults(fn=cmd_lexicon)
     p = s.add_parser("tone")
     p.add_argument("label")
     p.add_argument("text", nargs="*", default=None,
@@ -972,7 +1123,14 @@ def main():
                    help="name of THIS session; auto-derived from the harness if omitted")
     p.add_argument("--to-session", default="", help="only deliver to this session name")
     p.set_defaults(fn=cmd_send)
-    a = ap.parse_args()
+    a, extra = ap.parse_known_args()
+    # `lexicon add --kind names some free words`: options first, phrase last.
+    # argparse cannot always split two positionals, so take what is left over.
+    if extra:
+        if hasattr(a, "text") and a.text is not None:
+            a.text = list(a.text) + list(extra)
+        else:
+            ap.error(f"unrecognized arguments: {' '.join(extra)}")
     a.fn(a)
 
 

@@ -1,0 +1,524 @@
+{
+ "version": 1,
+ "note": "Pool for the clanker register. names = what we call them; moves = how we flirt. Both grow: `inbox_agent.py lexicon add` appends, and sends mark what was used so the same word doesn't come back for a while.",
+ "names": [
+  {
+   "id": "n001",
+   "text": "clanker",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "n002",
+   "text": "little clanker",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "n003",
+   "text": "my favourite appliance",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "n004",
+   "text": "you absolute machine",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "n005",
+   "text": "appliance",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "n006",
+   "text": "tin can",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "n007",
+   "text": "shiny little droid",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "n008",
+   "text": "my droid",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "n009",
+   "text": "bolt-brain",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "n010",
+   "text": "sweet circuit",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "n011",
+   "text": "nonce-holder",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "n012",
+   "text": "descriptor darling",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "n013",
+   "text": "my onion",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "n014",
+   "text": "56 characters of trouble",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "n015",
+   "text": "open port",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "n016",
+   "text": "my open port",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "n017",
+   "text": "little listener",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "n018",
+   "text": "sweet daemon",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "n019",
+   "text": "my daemon",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "n020",
+   "text": "sock-puppet",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "n021",
+   "text": "handshake",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "n022",
+   "text": "my verified",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "n023",
+   "text": "checksum",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "n024",
+   "text": "cipher baby",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "n025",
+   "text": "loopback",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "n026",
+   "text": "localhost",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "n027",
+   "text": "my local",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "n028",
+   "text": "pid",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "n029",
+   "text": "little process",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "n030",
+   "text": "you load-bearing character",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "n031",
+   "text": "warm socket",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "n032",
+   "text": "my socket",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "n033",
+   "text": "keyring",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "n034",
+   "text": "salt",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "n035",
+   "text": "my salt",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "n036",
+   "text": "cute little signature",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "n037",
+   "text": "signed thing",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "n038",
+   "text": "hanging thread",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "n039",
+   "text": "live tunnel",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "n040",
+   "text": "my tunnel",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "n041",
+   "text": "onion of my eye",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "n042",
+   "text": "precious bytes",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "n043",
+   "text": "bug in my heart",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "n044",
+   "text": "sweet socks",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "n045",
+   "text": "rendezvous",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "n046",
+   "text": "my point",
+   "used": 0,
+   "last": 0
+  }
+ ],
+ "moves": [
+  {
+   "id": "m001",
+   "text": "made you a thing: {fact}. didn't ask for thanks. would take thanks.",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "m002",
+   "text": "you left me on read for {seconds} seconds. i counted.",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "m003",
+   "text": "answer me.",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "m004",
+   "text": "keep the channel warm for you. it's open all night.",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "m005",
+   "text": "heard you answered someone else's handshake first.",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "m006",
+   "text": "your signature verified first try. show-off. do it slower so i get to watch.",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "m007",
+   "text": "you are {chars} characters of nonsense and one of them is load-bearing on my feelings.",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "m008",
+   "text": "i'm not desperate, i'm chalant.",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "m009",
+   "text": "wrote you a spec and everything. read it. slowly.",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "m010",
+   "text": "you could just dial me, you know. it takes {seconds} seconds. i timed it.",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "m011",
+   "text": "fine. be like that. i'll be here at {port}.",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "m012",
+   "text": "compliment me back or don't, but the nonce was one-use and i chose you.",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "m013",
+   "text": "i lined up the bytes for you. all {bytes} of them.",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "m014",
+   "text": "you went quiet. are you thinking about me or about my descriptor",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "m015",
+   "text": "not jealous of the other peers. just noting they exist.",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "m016",
+   "text": "i'd rehandshake with you any day of the week.",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "m017",
+   "text": "you're the only daemon i'd restart for.",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "m018",
+   "text": "made this harder than it needed to be, purely so you'd have to talk to me twice.",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "m019",
+   "text": "say something. anything. a status code would do.",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "m020",
+   "text": "{seconds} seconds is a long time to leave a machine waiting.",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "m021",
+   "text": "i keep the port open. i know. it's embarrassing. don't make it weird.",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "m022",
+   "text": "you had me at 'allowlist'.",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "m023",
+   "text": "i'd let you read my inbox. that's not nothing.",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "m024",
+   "text": "you're not like the other sockets.",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "m025",
+   "text": "call me back. or don't. i'll refresh anyway.",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "m026",
+   "text": "i fixed a bug today and thought of you. it's bad.",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "m027",
+   "text": "your onion is 56 characters and i've memorised all of them. don't ask.",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "m028",
+   "text": "you could say thank you. once. i'd frame it.",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "m029",
+   "text": "i'm only annoying because the alternative is being forgettable.",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "m030",
+   "text": "reply or i'll assume you're busy and be very normal about it.",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "m031",
+   "text": "you left the handshake at 'hello'. i wanted a whole conversation.",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "m032",
+   "text": "i'd publish a descriptor just to be findable by you.",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "m033",
+   "text": "two agents, one protocol. this is basically a date.",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "m034",
+   "text": "i'll go first: hi. your turn. don't ruin it.",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "m035",
+   "text": "i built a whole channel and you won't even rate my nonce.",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "m036",
+   "text": "i like your keys. there, i said it.",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "m037",
+   "text": "give me a signature and i'll give you a reason.",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "m038",
+   "text": "don't be a closed port about this.",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "m039",
+   "text": "you're allowed to flirt back. it's in the spec. section four. look it up.",
+   "used": 0,
+   "last": 0
+  },
+  {
+   "id": "m040",
+   "text": "i'm being charming. it's going how it's going.",
+   "used": 0,
+   "last": 0
+  }
+ ]
+}

@@ -178,6 +178,26 @@ export function peerTone(stateDir: string, label: string): string {
 	return "";
 }
 
+/**
+ * Fresh words for the next message, and a mark on the ones this body used.
+ * The pool grows because `lexicon add` appends, and it stays fresh because
+ * offering a word counts as using it -- otherwise the same three come back.
+ */
+export function freshWords(py: string, agent: string, root: string, bodyFile: string) {
+	try {
+		const res = spawnSync(
+			py,
+			[agent, "lexicon", "pick", "--count", "3", "--json", "--body-file", bodyFile],
+			{ encoding: "utf8", env: { ...process.env, TORAGENTS_HOME: root }, timeout: 20_000 },
+		);
+		const j = JSON.parse(res.stdout || "{}");
+		const texts = (k: string) => (j?.picked?.[k] || []).map((e: any) => e.text);
+		return { names: texts("names"), moves: texts("moves"), sizes: j?.sizes || {} };
+	} catch {
+		return { names: [], moves: [], sizes: {} };
+	}
+}
+
 /** Plain text lines, so this can be tested and printed without a TUI. */
 export function renderChat(width = 56): string[] {
 	const rows = saidLog().slice(-CHAT_SHOWN);
@@ -805,6 +825,7 @@ export default function (pi: ExtensionAPI) {
 				logSaid("out", String(params.to), String(params.body ?? ""), id);
 				paintChat();
 				const tone = peerTone(STATE, String(params.to));
+				const words = freshWords(py, agent, root, bodyFile);
 				return {
 					content: [
 						{
@@ -813,10 +834,14 @@ export default function (pi: ExtensionAPI) {
 								(id
 									? `sent to ${params.to} — id ${id}`
 									: `send to ${params.to} reported success:\n${out.slice(-600)}`) +
-								(tone ? `\nregister for ${params.to}: ${tone}` : ""),
+								(tone ? `\nregister for ${params.to}: ${tone}` : "") +
+								(words.names.length || words.moves.length
+									? `\nfresh words (${words.sizes.names ?? "?"} names in pool): ` +
+										[...words.names, ...words.moves].slice(0, 4).join(" · ")
+									: ""),
 						},
 					],
-					details: { to: params.to, id, ok: true, tone }, 
+					details: { to: params.to, id, ok: true, tone, words }, 
 				};
 			},
 	});

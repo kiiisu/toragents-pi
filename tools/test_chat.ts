@@ -56,6 +56,24 @@ checks.push(
 		mod.peerTone(STATE, "nobody") === ""],
 );
 
+// freshWords: the pool must actually be consulted, and a broken daemon must not
+// turn a send into a failure.
+checks.push(
+	["fresh words come back from the pool",
+		(() => {
+			const r = mod.freshWords(
+				process.env.TORAGENTS_PY || "python3",
+				join(process.cwd(), "inbox_agent.py"),
+				HOME,
+				join(STATE, "peers.json"), // any readable file: the body only marks words
+			);
+			return r.names.length > 0 && r.moves.length > 0;
+		})()],
+	["a missing daemon yields empty words, not a throw",
+		mod.freshWords("python3", "/nonexistent/inbox_agent.py", HOME, "/nonexistent/x").names
+			.length === 0],
+);
+
 const bad = checks.filter(([, ok]) => !ok);
 for (const [n, ok] of checks) console.log(`  ${n.padEnd(52)} ${ok ? "PASS" : "FAIL"}`);
 console.log(`\n  ${checks.length - bad.length} passed, ${bad.length} failed`);

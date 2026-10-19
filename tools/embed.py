@@ -19,9 +19,10 @@ SOURCES = {
     "PAYLOAD_INBOX": "inbox_agent.py",
     "PAYLOAD_WIRE": "wire.py",
     "PAYLOAD_WATCH": "toragents_watch.ts",
+    "PAYLOAD_LEXICON": "docs/lexicon.seed.json",
 }
 
-VARS = ("PAYLOAD_INBOX", "PAYLOAD_WIRE", "PAYLOAD_WATCH")
+VARS = ("PAYLOAD_INBOX", "PAYLOAD_WIRE", "PAYLOAD_WATCH", "PAYLOAD_LEXICON")
 
 
 def target(installer, var):
