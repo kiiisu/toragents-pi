@@ -402,6 +402,18 @@ export function writeSnapshot(rows: Said[]): boolean {
  * cannot read must not take the pane with it.
  */
 export interface MailFacts {
+	/**
+	 * Newest send the *transport* recorded, in ms. Outbox sends do not write
+	 * chat.jsonl, so a reply sent that way is invisible to the transcript -- and a
+	 * header that cannot see your own reply keeps saying the peer is waiting.
+	 */
+	lastSent: number | null;
+	/**
+	 * Newest send per correspondent, in ms. Per peer, because answering one person
+	 * says nothing about another: a send to kisu must not silence a wait from
+	 * somebody else, which is exactly the bug a single timestamp produced.
+	 */
+	sentByPeer: Record<string, number>;
 	queued: number;
 	queuedChars: number;
 	oldestQueued: number | null;
@@ -413,6 +425,8 @@ export interface MailFacts {
 }
 
 const FACTS_EMPTY: MailFacts = {
+	lastSent: null,
+	sentByPeer: {},
 	queued: 0,
 	queuedChars: 0,
 	oldestQueued: null,
@@ -471,10 +485,23 @@ export function readMailFacts(stateDir = STATE): MailFacts {
 		}
 	}
 	for (const msg of inbox.rows) if (msg?.from_known === false) facts.strangers++;
+	// One letter, one count. A retried letter writes a sent record per attempt
+	// (that is what makes "did it land?" answerable), so counting records would
+	// report five unconfirmed letters where the user wrote two.
+	const unconfirmed = new Set<string>();
 	for (const rec of sent.rows) {
+		const at = Number(rec?.at) * 1000;
+		if (Number.isFinite(at) && at > 0) {
+			if (facts.lastSent === null || at > facts.lastSent) facts.lastSent = at;
+			const peer = typeof rec?.to === "string" ? rec.to : "";
+			if (peer && (!facts.sentByPeer[peer] || at > facts.sentByPeer[peer])) facts.sentByPeer[peer] = at;
+		}
 		const state = String(rec?.state || "");
-		if (state && state !== "acked" && state !== "delivered") facts.unsent++;
+		if (!state || state === "acked" || state === "delivered") continue;
+		const key = `${rec?.to || "?"}|${rec?.sha256 || rec?.local_id || "?"}`;
+		unconfirmed.add(key);
 	}
+	facts.unsent = unconfirmed.size;
 	if (facts.oldestQueued !== null) facts.oldestQueued = now - facts.oldestQueued;
 	factsCache = { key, facts };
 	return facts;

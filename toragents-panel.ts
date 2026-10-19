@@ -69,7 +69,7 @@ import {
  * Self-declared for now, and reported when the pane mounts. It is not yet consumed
  * by doctor; when it is, it should come from here rather than from a second copy.
  */
-export const PANEL_VERSION = 3;
+export const PANEL_VERSION = 4;
 
 const WIDTH_DEFAULT = 46;
 const MIN_TERMINAL = 110;
@@ -122,6 +122,23 @@ function facts(): MailFacts {
 	const now = Date.now();
 	if (!factsMemo || now - factsMemo.at > 1500) factsMemo = { at: now, facts: readMailFacts() };
 	return factsMemo.facts;
+}
+
+/**
+ * When this side last sent anything, according to both records that know.
+ *
+ * The transcript holds what this session wrote; sent/ holds what the transport
+ * actually put on the wire, including outbox retries that never touched the
+ * spine. Later of the two wins. Pure, so it can be tested against a fixture
+ * instead of the author's mailbox.
+ */
+export function repliesByPeer(msgs: Said[], sentByPeer: Record<string, number> = {}): Record<string, number> {
+	const out: Record<string, number> = { ...sentByPeer };
+	for (const m of msgs) {
+		if (m.dir !== "out") continue;
+		if (!out[m.peer] || m.at > out[m.peer]) out[m.peer] = m.at;
+	}
+	return out;
 }
 
 function ago(ms: number): string {
@@ -303,6 +320,7 @@ export function renderColumn(
 	view: ColumnView,
 	theme: any,
 	facts?: MailFacts,
+	replies: Record<string, number> = {},
 ): { lines: string[]; starts: number[]; ends: number[] } {
 	const dim = (s: string) => (theme ? theme.fg("dim", s) : s);
 	const accent = (s: string) => (theme ? theme.fg("accent", s) : s);
@@ -362,7 +380,7 @@ export function renderColumn(
 	});
 
 	// One header: whose turn it is, and whether this pane has the keyboard.
-	const summary = statusSummary(msgs, view.seen);
+	const summary = statusSummary(msgs, view.seen, replies);
 	const head = " toragents" + (summary ? ` · ${summary}` : "") + (view.focused ? accent(" · FOCUS") : "");
 	const foot = view.focused
 		? " j/k · enter open · g/G ends · esc out"
@@ -412,10 +430,16 @@ export function renderColumn(
  * run ends, so the count drops to zero on the next paint without anyone resetting
  * anything).
  */
-export function waitingOn(msgs: Said[]): { count: number; peers: string[] } {
+export function waitingOn(msgs: Said[], replies: Record<string, number> = {}): { count: number; peers: string[] } {
 	const peers: string[] = [];
 	let count = 0;
 	for (let i = msgs.length - 1; i >= 0 && msgs[i].dir === "in"; i--) {
+		// Per correspondent, and a reply counts even when the transcript never saw
+		// it: mail sent through the outbox is recorded in sent/, not chat.jsonl.
+		// One timestamp for "I sent something" was worse than useless -- a letter to
+		// kisu silenced a question from somebody else and the header went quiet on a
+		// message nobody had answered.
+		if (msgs[i].at <= (replies[msgs[i].peer] ?? 0)) break;
 		count++;
 		if (!peers.includes(msgs[i].peer)) peers.push(msgs[i].peer);
 	}
@@ -428,8 +452,12 @@ export function waitingOn(msgs: Said[]): { count: number; peers: string[] } {
  * Nothing is a real answer: when the last word is yours there is no news, and a
  * header that always has a number in it trains you to stop reading the number.
  */
-export function statusSummary(msgs: Said[], seen: Set<string>): string {
-	const waiting = waitingOn(msgs);
+export function statusSummary(
+	msgs: Said[],
+	seen: Set<string>,
+	replies: Record<string, number> = {},
+): string {
+	const waiting = waitingOn(msgs, replies);
 	if (waiting.count > 0) {
 		if (waiting.peers.length === 1) return `${waiting.peers[0]} waiting`;
 		return `${waiting.count} waiting`;
@@ -457,7 +485,13 @@ function stripLines(): number {
  * having. Lines are capped and the newest message is the only one shown, because
  * an inbox strip is a notification, not a reader.
  */
-export function renderStrip(msgs: Said[], width: number, seen: Set<string>, theme: any): string[] {
+export function renderStrip(
+	msgs: Said[],
+	width: number,
+	seen: Set<string>,
+	theme: any,
+	replies: Record<string, number> = {},
+): string[] {
 	const rows = stripLines();
 	const dim = (x: string) => (theme ? theme.fg("dim", x) : x);
 	const accent = (x: string) => (theme ? theme.fg("accent", x) : x);
@@ -465,7 +499,7 @@ export function renderStrip(msgs: Said[], width: number, seen: Set<string>, them
 
 	const newest = msgs[msgs.length - 1];
 	const hint = "/toragents-panel";
-	const summary = statusSummary(msgs, seen);
+	const summary = statusSummary(msgs, seen, replies);
 	const head =
 		" toragents" + (summary ? accent(` · ${summary}`) : "") + (newest ? "" : dim(" · nothing yet"));
 	const pad = Math.max(1, width - plainWidth(head) - hint.length - 1);
@@ -565,7 +599,7 @@ export default function (pi: ExtensionAPI) {
 		const rows = Number(tui?.terminal?.rows || 30);
 		const width = column?.width ?? columnWidth(Number(tui?.terminal?.columns || 0));
 		const height = Math.max(3, rows - 2);
-		const layout = renderColumn(msgs, width, rows, view, theme, facts());
+		const layout = renderColumn(msgs, width, rows, view, theme, facts(), repliesByPeer(msgs, facts().sentByPeer));
 		const s = layout.starts[view.selected];
 		const e = layout.ends[view.selected];
 		if (s === undefined || e === undefined) return;
@@ -660,7 +694,8 @@ export default function (pi: ExtensionAPI) {
 					column = new SideColumn(t, {
 						width: columnWidth(Number(t?.terminal?.columns || 0)),
 						minTerminalWidth: MIN_TERMINAL,
-						render: (w, r) => renderColumn(msgs, w, r, view, theme, facts()).lines,
+						render: (w, r) =>
+					renderColumn(msgs, w, r, view, theme, facts(), repliesByPeer(msgs, facts().sentByPeer)).lines,
 						onWheel: (delta) => {
 							scrollLines(delta * 3);
 							return true;
@@ -744,7 +779,14 @@ export default function (pi: ExtensionAPI) {
 				tui = t;
 				theme = th;
 				return {
-					render: () => renderStrip(msgs, Number(t?.terminal?.columns || 80), view.seen, theme),
+					render: () =>
+						renderStrip(
+							msgs,
+							Number(t?.terminal?.columns || 80),
+							view.seen,
+							theme,
+							repliesByPeer(msgs, facts().sentByPeer),
+						),
 					invalidate() {},
 					dispose: () => {
 						stripOn = false;

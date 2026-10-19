@@ -117,7 +117,7 @@ delete process.env.TORAGENTS_PANEL;
 
 const { readThread, threadSignature, tldr } = await import("../_lib/toragents-transcript.ts");
 const { SideColumn, clampColumnWidth, dividerIntent, parseSgrMouse } = await import("../_lib/toragents-side-column.ts");
-const { PANEL_VERSION, renderColumn, renderFooter, renderStrip, statusSummary, subject, waitingOn } = await import("../toragents-panel.ts");
+const { PANEL_VERSION, repliesByPeer, renderColumn, renderFooter, renderStrip, statusSummary, subject, waitingOn } = await import("../toragents-panel.ts");
 const { POLICY_DEFAULTS, isReceiver, panelMode, policyPath, readPolicy, writePanelWidth } = await import("../_lib/toragents-policy.ts");
 
 const theme = { fg: (_c: string, s: string) => s, bold: (s: string) => s };
@@ -125,7 +125,7 @@ const theme = { fg: (_c: string, s: string) => s, bold: (s: string) => s };
 // The reader's self-declared version, pinned the way EXT_VERSION is: a change to how
 // the pane behaves must arrive with a bump, or a window loaded before it will keep
 // rendering the old shape and look healthy. Change this pair together, deliberately.
-ok(PANEL_VERSION === 3, `the reader is panel v3 (found v${PANEL_VERSION}) — bump both sides together`);
+ok(PANEL_VERSION === 4, `the reader is panel v4 (found v${PANEL_VERSION}) — bump both sides together`);
 
 // ── 1. the transcript merge ────────────────────────────────────────────────
 const rows = readThread();
@@ -538,6 +538,54 @@ for (const width of [28, 46, 100]) {
 	const withFooter = renderColumn(rows, 46, 20, probe, null, f).lines;
 	ok(withFooter.length === 20, "the footer does not change the height it promises pi");
 	ok(/outbox/.test(withFooter.join("\n")) && !/outbox/.test(withoutFooter.join("\n")), "footer rows appear only when there are facts");
+}
+
+// ── 9. a reply the spine never saw still ends the wait ────────────────────
+//
+// Found on a live screen: the header said "7 waiting" after three of those seven
+// had already been answered, because mail sent through the outbox is recorded in
+// sent/, not chat.jsonl. The transcript is the order of the conversation, not the
+// whole of what left the building.
+{
+	const rowsTail = [
+		{ at: 1000, dir: "in" as const, peer: "kisu", id: "a", body: "older" },
+		{ at: 2000, dir: "in" as const, peer: "kisu", id: "b", body: "older still" },
+	];
+	ok(waitingOn(rowsTail).count === 2, "without a reply, both are waiting");
+	ok(waitingOn(rowsTail, { kisu: 2500 }).count === 0, "a send to that peer after them ends the wait");
+	ok(waitingOn(rowsTail, { kisu: 1500 }).count === 1, "a send between them leaves the newer one waiting");
+	ok(waitingOn(rowsTail, { maestro: 9999 }).count === 2,
+		"answering somebody else does not answer kisu — the bug the single timestamp caused");
+	ok(repliesByPeer([{ at: 900, dir: "out" as const, peer: "kisu", id: "z", body: "x" }], { kisu: 2600 }).kisu === 2600,
+		"the transport's own record wins when it is newer than the transcript");
+	ok(repliesByPeer([{ at: 3000, dir: "out" as const, peer: "kisu", id: "z", body: "x" }], { kisu: 2600 }).kisu === 3000,
+		"and the transcript wins when it is");
+	ok(Object.keys(repliesByPeer([], {})).length === 0, "no sends at all is empty, not a zero that would mean 1970 was a reply");
+}
+
+// ── 10. one letter is one unconfirmed letter ──────────────────────────────
+//
+// The queue retries, and every retry writes its own sent record (that is how "did
+// it land?" stays answerable). Counting records would have reported five
+// unconfirmed letters for the two actually written.
+{
+	const dir = mkdtempSync(join(tmpdir(), "toragents-sent-"));
+	mkdirSync(join(dir, "sent"), { recursive: true });
+	mkdirSync(join(dir, "outbox"), { recursive: true });
+	mkdirSync(join(dir, "inbox"), { recursive: true });
+	const base = { to: "kisu", state: "unknown", len: 10 };
+	for (let i = 0; i < 5; i++) {
+		writeFileSync(join(dir, "sent", `r${i}.json`), JSON.stringify({ ...base, local_id: `l${i}`, sha256: "aaaa", at: 1000 + i }));
+	}
+	writeFileSync(join(dir, "sent", "other.json"), JSON.stringify({ ...base, local_id: "l9", sha256: "bbbb", at: 2000 }));
+	writeFileSync(join(dir, "sent", "acked.json"), JSON.stringify({ ...base, state: "acked", local_id: "l8", sha256: "cccc", at: 3000 }));
+	const { readMailFacts } = await import("../_lib/toragents-transcript.ts");
+	const f = readMailFacts(dir);
+	ok(f.unsent === 2, `five retries of one letter and one other count as 2 unconfirmed (got ${f.unsent})`);
+	ok(f.lastSent === 3_000_000, `the newest send is reported in ms (got ${f.lastSent})`);
+	// Including acknowledged sends: an ack is still evidence you wrote to them, and
+	// the newest evidence is what ends the wait.
+	ok(f.sentByPeer.kisu === 3_000_000, `sends are tracked per correspondent (kisu at ${f.sentByPeer.kisu})`);
 }
 
 console.log(`\n${fails.length === 0 ? "ALL PASS" : "FAIL " + fails.length}`);
