@@ -957,8 +957,10 @@ def cmd_doctor(a):
     up with the inbox? No harness config to parse and no hook that can fail
     silently, which is the whole reason this project is pi-only.
     """
+    problems = []
     daemon_ver = _daemon_version()
     if daemon_ver != AGENT_VERSION:
+        problems.append({"label": "daemon", "state": "wrong", "why": "stale daemon"})
         print(f"code         file={AGENT_VERSION} daemon={daemon_ver}  <- "
               f"the daemon is running different code; restart it or the new "
               f"features will answer as if they do not exist")
@@ -967,7 +969,6 @@ def cmd_doctor(a):
 
     # Per-window extension builds. A window reports the literal it was compiled
     # with, on every tick, so a stale one cannot hide and cannot lie about itself.
-    problems = []
     windows = _window_versions(STATE)
     if windows:
         stale = [w for w in windows if w["state"] != "ok"]
@@ -1174,13 +1175,23 @@ def cmd_doctor(a):
             state_word = "PENDING"
         print(f"  {mid:14} {state_word:12} to={to_sess or '-':18} "
               f"from={m.get('from_label') or m.get('from') or '?'}")
-    if problems:
-        # The exit code IS the check: a human reads output, a script or another agent
-        # reads the status. A mismatch that only prints is one somebody scrolls past.
-        print(f"\n{len(problems)} version mismatch(es): something running here is not "
-              f"the code on disk. /reload the window(s) marked stale, or restart the "
-              f"daemon.")
+    # Exit codes carry the ACTION, not just failure:
+    #   0  known and fine
+    #   1  known and WRONG   -> fix something (stale daemon/window against a live writer)
+    #   2  cannot answer     -> wait for a window to speak; nothing is known to be wrong
+    # One code for both would make a script wait when it should repair, or repair a
+    # state that is merely unknown -- the same lossy compression we removed all day.
+    wrong = [p for p in problems if p.get("state") != "unknown"]
+    unknown = [p for p in problems if p.get("state") == "unknown"]
+    if wrong:
+        print(f"\n{len(wrong)} KNOWN mismatch(es): something running here is not the "
+              f"code on disk. /reload the window(s) marked stale, or restart the daemon.")
         return 1
+    if unknown:
+        print(f"\n{len(unknown)} thing(s) cannot be answered: no fresh heartbeat writer, "
+              f"and a window running an extension older than the marker writes nothing. "
+              f"Nothing is known to be wrong; start or reload a window.")
+        return 2
     return 0
 
 

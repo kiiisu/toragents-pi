@@ -12,8 +12,13 @@ codebase made in four subsystems before it was named.
 
 Three states, same shape as the refusal path:
   fresh writer, zero windows   -> genuinely none          exit 0
-  absent writer                -> cannot answer           exit 1
-  stale writer                 -> cannot answer           exit 1
+  absent writer                -> cannot answer           exit 2 (WAIT)
+  stale writer                 -> cannot answer           exit 2 (WAIT)
+  fresh writer, old window     -> known and wrong         exit 1 (REPAIR)
+
+1 and 2 are different actions: repair something, or wait for a window to speak. One
+code for both makes a script wait when it should repair -- the same lossy compression
+as reporting a store gap as a peer's fabrication.
 
 Mutation: drop the writer check and the "cannot answer" cases print "no live window" —
 a confident negative built on nothing.
@@ -59,6 +64,14 @@ class DoctorCannotAnswer(unittest.TestCase):
                            text=True, env=env, timeout=180)
         return p.returncode, p.stdout + p.stderr
 
+    def window(self, code, fresh=True):
+        """A live window record reporting `code`."""
+        proc = subprocess.Popen(["sleep", "30"])
+        self.procs.append(proc)
+        with open(os.path.join(self.state, "live", "pi-test.json"), "w") as f:
+            json.dump({"session": "pi-test", "pid": proc.pid,
+                       "at": time.time() * 1000.0, "code": code}, f)
+
     def window_line(self, out):
         for line in out.splitlines():
             if line.startswith("window"):
@@ -78,7 +91,7 @@ class DoctorCannotAnswer(unittest.TestCase):
         self.assertIn("cannot answer", line,
                       f"an absent writer was read as 'no windows': {line}")
         self.assertIn("absent", line, line)
-        self.assertNotEqual(rc, 0, "a detector that cannot answer must not exit 0")
+        self.assertEqual(rc, 2, "cannot-answer must be 2 (wait), not 1 (repair)")
 
     def test_stale_writer_cannot_answer(self):
         self.writer(fresh=False)
@@ -86,7 +99,24 @@ class DoctorCannotAnswer(unittest.TestCase):
         line = self.window_line(out)
         self.assertIn("cannot answer", line, line)
         self.assertIn("stale", line, line)
-        self.assertNotEqual(rc, 0)
+        self.assertEqual(rc, 2)
+
+
+    def test_a_stale_window_against_a_fresh_writer_is_a_known_wrong(self):
+        """The complement: a window that speaks, and speaks the wrong version."""
+        self.writer()
+        self.window("2")                       # older than EXPECTED_EXT_VERSION
+        rc, out = self.doctor()
+        self.assertIn("pi-test", out, out)
+        self.assertIn("stale", out, out)
+        self.assertEqual(rc, 1, "a known mismatch must be 1 (repair), not 2 (wait)")
+
+    def test_a_current_window_is_fine(self):
+        self.writer()
+        self.window("3")
+        rc, out = self.doctor()
+        self.assertEqual(rc, 0, out)
+        self.assertIn("ok", self.window_line(out), out)
 
 
 if __name__ == "__main__":

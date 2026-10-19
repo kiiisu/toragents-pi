@@ -278,8 +278,19 @@ its extension at start, so an edited file is invisible to it until `/reload`. Ea
 window writes the version **literal** it was compiled with -- never a value read
 from disk, which a stale window would happily report as current.
 
-**`doctor` exits non-zero on any mismatch.** A human reads the output; a script or
-another agent reads the status code.
+**`doctor`'s exit code is three-valued, because two failures need different actions:**
+
+```
+0   known and fine
+1   known and WRONG   — something running here is not the code on disk: repair it
+                        (/reload the window, restart the daemon)
+2   cannot answer     — no fresh heartbeat writer, so a window may exist and be
+                        invisible: nothing is known to be wrong, wait for one to speak
+```
+
+A single non-zero code would make a script wait when it should repair, or repair a
+state that is merely unknown. On a fresh install nothing has reported yet, so expect
+`2` until pi has started once.
 
 Inside pi: `/toragents-status` (including failed messages),
 `/toragents-retry`, `/toragents-mute`, `/toragents-unmute`, `/toragents-chat`
