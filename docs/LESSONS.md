@@ -387,3 +387,23 @@ The rule for any checker, alongside the rule for fixtures:
   A checker built from the same misunderstanding as the bug will pass its own tests; it
   only fails when pointed at the case that started the argument. The author's model
   cannot audit itself, including the author's model of an audit.
+
+## A version doctor cannot read is not a version doctor checks
+
+`PANEL_VERSION` is a literal in `toragents-panel.ts` and the pane says it when it mounts
+("panel v1"). The tempting next step is for `doctor` to compare it — and that step is
+refused, because Python cannot import the TypeScript module, so comparing would mean
+either parsing the source text or keeping a second copy of the number. Both are the
+same bug: a checker that reads its expectation from somewhere other than the thing that
+will actually run.
+
+The rule that decides it: **doctor reads markers that the running process wrote, never
+the source text and never a copy of a constant.** The watcher qualifies because it
+writes `state/live/<label>.json` every tick with the version it is running. The pane
+qualifies the day it writes its own marker. Until then the honest output is silence,
+and silence must be understood as "unverified", not "fine" — acceptable here only
+because a stale pane is cosmetic (an old layout), never a delivery decision.
+
+When the pane does write a marker, it goes in the same file and the same account as the
+watcher's: one place per window, one meaning per field. A second file would be a second
+account of the same window, which is how the two surfaces drifted in the first place.
