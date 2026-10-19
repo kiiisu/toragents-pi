@@ -38,3 +38,27 @@ console.log(`1. two sessions, one message   delivered=${n(o1)}+${n(o2)}=${total}
 console.log(`2. the winner records the claim claimed=${JSON.stringify(claimed)}  -> ${claimed.includes("race1") ? "PASS" : "FAIL"}`);
 console.log(`3. announced.json keeps it     announced=${JSON.stringify(announced)}  -> ${announced.includes("race1") ? "PASS" : "FAIL"}`);
 if (total !== 1 || !claimed.includes("race1") || !announced.includes("race1")) process.exit(1);
+
+// 4) THE LOSER PATH, deterministically. The concurrent race above almost never
+// lands in claim()'s EEXIST branch, because the winner writes announced.json
+// first and the loser filters the message out before claiming it. So the branch
+// that actually enforces "exactly one" when two sessions do collide is never
+// exercised — proved by mutating it (EEXIST -> return true): the file stayed
+// green. A claim already held by someone else is reachable on purpose, so test
+// that instead of hoping for a scheduling accident.
+mkdirSync(`${H}/state/claimed`, { recursive: true });
+writeFileSync(`${H}/state/claimed/race2`, "another-session 1");
+writeFileSync(
+	`${H}/state/inbox/3001-race2.json`,
+	JSON.stringify({ id: "race2", body: "already claimed elsewhere", from_label: "peer", received: 3001 }),
+);
+const held = run();
+const heldDelivered = n(held.stdout.toString());
+const announced2 = JSON.parse(readFileSync(`${H}/state/announced.json`, "utf8"));
+console.log(`4. a claim held elsewhere blocks me  delivered=${heldDelivered}  -> ${heldDelivered === 0 && !announced2.includes("race2") ? "PASS (not taken, not marked)" : "FAIL (delivered or marked while another session owns it)"}`);
+rmSync(`${H}/state/claimed/race2`);
+const freed = run();
+const freedDelivered = n(freed.stdout.toString());
+console.log(`5. and it goes out once the claim is gone delivered=${freedDelivered}  -> ${freedDelivered === 1 ? "PASS" : "FAIL"}`);
+if (heldDelivered !== 0 || announced2.includes("race2") || freedDelivered !== 1) process.exit(1);
+

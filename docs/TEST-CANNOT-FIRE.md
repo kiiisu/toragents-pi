@@ -432,18 +432,37 @@ sending the bare 56-char base32").
 - W3: the empty-tick early return is not behaviourally observable — with zero
   items the following loop does nothing anyway. It is an optimisation, not a
   contract; nothing user-visible depends on it, so no test can distinguish it.
-- R1: inverting the claim's exclusivity (an `EEXIST` now returns *true*, so both
-  racing sessions believe they own the message) leaves `test_race.ts` green. Two
-  explanations are possible and this pass did not distinguish them:
-  (a) exactly-one-delivery is enforced somewhere else as well, so the claim is
-  not the guarantee the file's header says it is; or
-  (b) the harness does not create the simultaneous-claim window, so the
-  guarantee is not exercised at all.
+- R1 — **RESOLVED, and it was (b), proved rather than argued.** The mutant was
+  made to record its own execution: `appendFileSync("/tmp/r1/WITNESS", ...)` in
+  the branch that returns *true* on `EEXIST`. `test_race.ts` stayed green and the
+  witness file was never created. The simultaneous-claim window is never reached,
+  because the winner writes `announced.json` first and the loser filters the
+  message out before it ever calls `claim()`. The exclusivity primitive
+  (`writeFileSync(..., { flag: "wx" })`, i.e. `O_EXCL`) is atomic and sound; what
+  was unexercised is the code that reacts to losing.
 
-  Either way the consequence is the same and it is the most serious entry in
-  this document: the file whose entire purpose is "two sessions, one message,
-  exactly one delivers" survives the claim being broken. Until that is resolved,
-  R1 stands as an untested guarantee, not as coverage.
+  Fix, at the level the window can actually be opened: `test_race.ts` gained
+  checks 4 and 5 that *hold the claim* deliberately — a fresh claim file owned by
+  another session, then a tick. The message must not be delivered and must not be
+  marked; remove the claim and it must go out exactly once.
+
+      4. a claim held elsewhere blocks me     delivered=0  PASS (not taken, not marked)
+      5. and it goes out once the claim is gone delivered=1 PASS
+
+  The same EEXIST mutation now fails both:
+
+      4. ... delivered=1  FAIL (delivered or marked while another session owns it)
+      5. ... delivered=0  FAIL
+
+  **What is still not tested, stated plainly:** true simultaneity. Two processes
+  reaching `claim()` in the same microsecond is not forceable from a shell
+  harness, and it does not need to be — the primitive is `O_EXCL`, which the
+  kernel serialises. What mattered was that the loser's *reaction* was never
+  exercised, and that is now tested deterministically. The remaining risk is
+  therefore inside the kernel primitive, not inside this code, and the honest
+  description is: exclusivity enforced by `O_EXCL`; the loser path is now
+  mutation-tested; the simultaneous collision itself is witnessed by reasoning,
+  not by a test.
 
 Recipes:
 
