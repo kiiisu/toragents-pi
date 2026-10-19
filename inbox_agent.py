@@ -467,6 +467,11 @@ class Inbox:
         mid = uuid.uuid4().hex[:12]
         rec = {"id": mid, "received": time.time(), "from_fingerprint": fp,
                "from_label": peer.get("label", ""), "from_onion": peer.get("onion", ""),
+               # Allowlisting is checked HERE and nowhere later, so it is a fact about
+               # the moment of receipt. Storing it is the only way a later reader can
+               # tell "removed from the allowlist since" from "we have no idea how
+               # this got in" -- and those are very different questions to answer.
+               "from_known": True,
                "body": body}
         for f in ("from_session", "to_session"):
             if f == "to_session" and presence:
@@ -896,6 +901,10 @@ def _inbox_artifact_report(state_dir):
                 note = f", self-declared {label!r}"
                 if _is_test_label(label):
                     note += " (test identity)"
+            if r.get("from_known"):
+                note += ", allowlisted at receipt (since removed)"
+            else:
+                note += ", no record of it ever being allowlisted"
             strangers.append(f"{mid}({fp[:12]}{note})")
     return sorted(strangers), sorted(artifacts)
 

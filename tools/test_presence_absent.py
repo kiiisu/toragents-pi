@@ -135,6 +135,11 @@ class AbsentWriter(unittest.TestCase):
         self.assertFalse(reply.get("presence"), f"nothing was degraded: {reply}")
         rec = self.stored(reply)
         self.assertEqual(rec.get("to_session"), "pi-here")
+        # Allowlisting is checked at receipt and never again, so the record carries
+        # that fact; without it a later allowlist edit would leave the record
+        # looking like something that got in uninvited.
+        self.assertIs(rec.get("from_known"), True,
+                      "the receipt-time allowlist fact was not recorded")
 
 
 if __name__ == "__main__":

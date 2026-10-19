@@ -32,10 +32,12 @@ class DoctorArtifacts(unittest.TestCase):
         self.addCleanup(lambda: subprocess.run(["rm", "-rf", self.home]))
         self.env = dict(os.environ, TORAGENTS_HOME=self.home, TORAGENTS_STATE=self.state)
 
-    def put(self, mid, fp, body="x", label=""):
+    def put(self, mid, fp, body="x", label="", known=None):
         rec = {"id": mid, "received": 1.0, "from_fingerprint": fp, "body": body}
         if label:
             rec["from_label"] = label
+        if known is not None:
+            rec["from_known"] = known
         with open(os.path.join(self.state, "inbox", f"20260101-{mid}.json"), "w") as f:
             json.dump(rec, f)
 
@@ -64,6 +66,26 @@ class DoctorArtifacts(unittest.TestCase):
         self.assertIn("self-declared", out,
                       "a self-chosen label must be presented as self-declared, not as fact")
         self.assertIn("test identity", out, "a harness label should be marked as such")
+
+    def test_a_message_accepted_while_allowlisted_says_so_when_the_peer_is_gone(self):
+        """Allowlisting is checked at receipt, so the record is the only witness.
+
+        Without this the report says "not on the allowlist" about a message that was
+        legitimately accepted, which reads as "how did this get in?" when the answer
+        is "it was allowed then, and has been removed since".
+        """
+        self.put("beefcafe0005", "0123456789abcdef0123456789abcdef",
+                 label="wiretest", known=True)
+        out = self.doctor()
+        self.assertIn("allowlisted at receipt", out,
+                      f"the receipt-time fact was not surfaced:\n{out}")
+        self.assertNotIn("no record of it ever being allowlisted", out)
+
+    def test_an_old_record_admits_it_does_not_know(self):
+        self.put("beefcafe0006", "0123456789abcdef0123456789abcdef")
+        out = self.doctor()
+        self.assertIn("no record of it ever being allowlisted", out,
+                      f"an old record must not be given a receipt-time claim it lacks:\n{out}")
 
     def test_an_artifact_also_names_its_label(self):
         self.put("beefcafe0004", "0" * 32, label="self-test")
