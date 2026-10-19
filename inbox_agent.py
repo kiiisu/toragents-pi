@@ -45,6 +45,7 @@ HOME = os.environ.get("TORAGENTS_HOME", os.path.expanduser("~/.toragents"))
 # throwaway key and signs with the wrong one.
 STATE = os.environ.get("TORAGENTS_STATE") or os.path.join(HOME, "state")
 INBOX = os.path.join(STATE, "inbox")
+SENT = os.path.join(STATE, "sent")
 ARCHIVE = os.path.join(STATE, "archive")
 PEERS = os.path.join(STATE, "peers.json")
 IDFILE = os.path.join(STATE, "identity.json")
@@ -551,6 +552,111 @@ def send_to(target_onion, body, k=None, session=None, to_session=None):
             sock.close()
         except Exception:
             pass
+
+
+# --------------------------------------------------------- full outbound --
+#
+# Tier 2 says a digest is an index, not bodies -- so each side must hold its own
+# outbound WHOLE, which nothing did: chat.jsonl keeps a display copy truncated at
+# 2000 chars, and the peer's inbox holds THEIR copy of what we sent them. The
+# result was a transcript split down the middle, each side holding the other's
+# words complete and its own truncated.
+#
+# Records are written as INTENT before the dial and confirmed after the reply,
+# because a send whose reply is lost still went out. Recording only successes
+# would silently drop precisely the messages that matter most.
+
+def _sent_dir():
+    os.makedirs(SENT, exist_ok=True)
+    return SENT
+
+
+def _write_sent(rec):
+    d = _sent_dir()
+    path = os.path.join(d, rec["local_id"] + ".json")
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(rec, f, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+
+
+def sent_intent(to_label, onion, body):
+    """Record that we are about to send. Never raises into the send path."""
+    rec = {"local_id": uuid.uuid4().hex[:12], "state": "pending",
+           "at": time.time(), "to": to_label or "", "onion": onion or "",
+           "len": len(body.encode("utf-8")),
+           "sha256": hashlib.sha256(body.encode("utf-8")).hexdigest()[:32],
+           "body": body}
+    try:
+        _write_sent(rec)
+    except Exception as e:                      # a store failure must not eat a send
+        print(f"[sent] WARNING could not record intent: {e}", file=sys.stderr)
+    return rec
+
+
+def sent_confirm(rec, reply):
+    """Mark a pending record delivered; the peer's id becomes the shared key."""
+    if not rec:
+        return
+    rec = dict(rec)
+    ok = bool(reply and reply.get("ok"))
+    rec["state"] = "confirmed" if ok else "failed"
+    rec["peer_id"] = (reply or {}).get("id")
+    rec["reply"] = reply
+    try:
+        _write_sent(rec)
+    except Exception as e:
+        print(f"[sent] WARNING could not confirm: {e}", file=sys.stderr)
+    return rec
+
+
+def sent_records():
+    d = _sent_dir()
+    out, broken = [], []
+    for name in sorted(os.listdir(d)):
+        if not name.endswith(".json"):
+            continue
+        p = os.path.join(d, name)
+        try:
+            with open(p) as f:
+                out.append(json.load(f))
+        except Exception as e:
+            broken.append((name, str(e)))
+    return out, broken
+
+
+def cmd_sent(a):
+    action = getattr(a, "action", "list") or "list"
+    recs, broken = sent_records()
+    if action == "verify":
+        bad = []
+        for r in recs:
+            body = r.get("body", "")
+            h = hashlib.sha256(body.encode("utf-8")).hexdigest()[:32]
+            if h != r.get("sha256") or len(body.encode("utf-8")) != r.get("len"):
+                bad.append(r.get("local_id"))
+        print(json.dumps({"records": len(recs), "broken": broken, "hash_mismatch": bad,
+                          "pending": [r.get("local_id") for r in recs if r.get("state") == "pending"],
+                          "failed": [r.get("local_id") for r in recs if r.get("state") == "failed"]},
+                         indent=2))
+        ok = not broken and not bad
+        sys.exit(0 if ok else 1)
+    if action == "show":
+        for r in recs:
+            if a.id in (r.get("local_id"), r.get("peer_id")):
+                print(json.dumps({k: v for k, v in r.items() if k != "reply"}, indent=2))
+                return
+        sys.exit("no such record")
+    # list
+    if not recs:
+        print("no outbound records (nothing stored yet)")
+        return
+    for r in sorted(recs, key=lambda x: x.get("at", 0)):
+        when = time.strftime("%m-%d %H:%M", time.localtime(r.get("at", 0)))
+        print(f"{when}  {r.get('state','?'):<9} {r.get('len',0):>6}b  "
+              f"{r.get('peer_id') or r.get('local_id')}  -> {r.get('to','')}")
 
 
 # ------------------------------------------------------------------- cli --
@@ -1225,9 +1331,15 @@ def cmd_send(a):
             break
     if target is None:
         sys.exit(f"unknown peer {a.to!r}; try: inbox_agent.py peers")
-    reply = send_to(target["onion"], a.body,
-                    session=getattr(a, "session", None) or auto_session() or None,
-                    to_session=getattr(a, "to_session", "") or None)
+    rec = sent_intent(target.get("label") or a.to, target.get("onion"), a.body)
+    try:
+        reply = send_to(target["onion"], a.body,
+                        session=getattr(a, "session", None) or auto_session() or None,
+                        to_session=getattr(a, "to_session", "") or None)
+    except BaseException:
+        sent_confirm(rec, None)                 # attempted and did not complete
+        raise
+    sent_confirm(rec, reply)
     print(json.dumps(reply, indent=2))
     sys.exit(0 if reply and reply.get("ok") else 1)
 
@@ -1263,6 +1375,10 @@ def main():
     p.add_argument("text", nargs="*", default=None,
                    help="for `add`: the words, as trailing arguments")
     p.set_defaults(fn=cmd_lexicon)
+    p = s.add_parser("sent")
+    p.add_argument("action", choices=["list", "verify", "show"], nargs="?", default="list")
+    p.add_argument("id", nargs="?", default="")
+    p.set_defaults(fn=cmd_sent)
     p = s.add_parser("chat")
     p.add_argument("--follow", "-f", action="store_true",
                    help="keep printing new messages as they cross the wire")

@@ -63,8 +63,10 @@ def need_api(obj, name, section):
     """Fetch a function tier 2 is supposed to introduce, or fail for THAT reason."""
     fn = getattr(obj, name, None)
     if fn is None:
+        # a constant is not a function: say which one is missing, not "FOO()"
+        what = name if name.isupper() else f"{name}()"
         raise AssertionError(
-            f"NOT IMPLEMENTED: {name}() does not exist on {getattr(obj, '__name__', obj)} "
+            f"NOT IMPLEMENTED: {what} does not exist on {getattr(obj, '__name__', obj)} "
             f"-- see TIER2-DIGEST.md {section}")
     return fn
 
@@ -173,12 +175,20 @@ class Node:
         raise AssertionError(f"receiver {self.label} never listened on {self.port}")
 
     def stop(self):
-        if self.proc and self.proc.poll() is None:
-            self.proc.terminate()
-            try:
-                self.proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                self.proc.kill()
+        if self.proc:
+            if self.proc.poll() is None:
+                self.proc.terminate()
+                try:
+                    self.proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    self.proc.kill()
+                    self.proc.wait(timeout=5)
+            # The serve process writes to a PIPE; leaving the read end open makes
+            # CPython emit ResourceWarning on GC. A warning in a green run is
+            # noise that hides the first real one, so close it deliberately.
+            if self.proc.stdout is not None:
+                self.proc.stdout.close()
+            self.proc = None
         self.tmp.cleanup()
 
     # -- wire ---------------------------------------------------------------
@@ -329,6 +339,53 @@ class Schema(Pair):
         self.assertLess(size, 64 * 1024, "premise changed: the cap is now reachable; rewrite this test")
         ok, why = self._as_pair(validate(biggest))
         self.assertTrue(ok, f"a {size}-byte digest of 512 maximal items must be accepted: {why}")
+
+    def test_the_bounds_are_named_and_the_item_count_is_the_functional_one(self):
+        """An implicit bound is one nobody can test.
+
+        The item count is the only thing that constrains schema-valid input, so
+        it has to be a named constant a consumer can read. The byte cap has to
+        be named too, or nobody can tell defence in depth from a functional
+        bound. Then the ratchet: recompute the worst legal digest from those
+        constants and require real headroom, so the day someone widens a field
+        or raises the item cap this fails loudly, instead of the cap silently
+        eating valid peers.
+        """
+        items = need_api(inbox_agent, "DG_MAX_ITEMS", "§2 (a+b <= 512)")
+        cap = need_api(inbox_agent, "DG_MAX_BYTES", "§2 (serialised <= 64 KiB)")
+        self.assertEqual(items, 512, f"item bound is {items}; the spec says 512")
+        self.assertEqual(cap, 64 * 1024, f"wire cap is {cap}; the spec says 65536")
+        worst = len(canon(dg([item(id_="x" * 64, n=16777216) for _ in range(items)])))
+        headroom = cap - worst
+        self.assertGreaterEqual(
+            headroom, 512,
+            f"worst legal digest is {worst} bytes, only {headroom} under the {cap} cap: "
+            "the cap is reachable through valid input, so it is now a functional bound "
+            "and the item count no longer constrains a peer",
+        )
+
+    def test_a_crafted_oversized_frame_is_rejected_by_the_cap(self):
+        """The only test that actually exercises the byte cap.
+
+        A schema-valid digest cannot reach 64 KiB (pinned above), so the cap can
+        only be driven by input the schema rejects -- which is what a wire
+        sanity guard is for. Refusal must be a refusal: an answer, the receiver
+        still up afterwards, and nothing written to the inbox.
+        """
+        cap = need_api(inbox_agent, "DG_MAX_BYTES", "§2 (serialised <= 64 KiB)")
+        nonce = self.b.hello()
+        huge = {"v": 1, "gen": int(time.time()), "a": [], "b": [],
+                "pad": "A" * (cap + 64)}
+        reply = self.b.raw_op({"op": "send", "nonce": nonce, "body": "cap probe", "dg": huge})
+        self.assertIsNotNone(reply, "the receiver closed the connection instead of answering")
+        self.assertFalse(reply.get("ok"), f"an oversized dg was accepted: {reply}")
+        why = (reply.get("error") or "").lower()
+        self.assertTrue(
+            any(w in why for w in ("size", "byte", "large", "64", "limit")),
+            f"refused for the wrong reason: {reply.get('error')!r}",
+        )
+        self.assertEqual(self.inbox_files(), [], "an oversized frame still stored a message")
+        self.assertTrue(self.b.hello().startswith, "the receiver did not survive the oversized frame")
 
     def test_version_other_than_1_is_refused_with_the_reason(self):
         validate = need_api(inbox_agent, "dg_validate", "§2 (v must be 1)")
