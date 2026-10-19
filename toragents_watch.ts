@@ -693,6 +693,26 @@ export function clearLive(stateDir: string, label: string): void {
 	}
 }
 
+/**
+ * Delivery addressing, pure and named so it can be asserted instead of described.
+ *
+ *   untargeted -> only the owning session delivers it
+ *   addressed  -> only the named session delivers it, owner or not
+ *
+ * The second rule is not a detail: the owner skips mail addressed elsewhere, so if
+ * the named window also declined as "not the owner", that message was delivered to
+ * nobody while the sender's receipt said "sent".
+ */
+export function wantsMessage(
+	m: { to_session?: string },
+	who: { owner: boolean; me: string; receive?: string },
+): boolean {
+	const target = (m.to_session || "").trim();
+	if (target) return who.me !== "" && target === who.me;
+	if (!who.owner) return false;
+	return who.receive !== "targeted";
+}
+
 function addressedToMe(m: RemoteMessage): boolean {
 	const target = (m.to_session || "").trim();
 	if (!target) return true;
@@ -858,18 +878,25 @@ export default function (pi: ExtensionAPI) {
 			// Muted: say nothing and mark nothing -- a muted session must not
 			// consume mail the peer meant for it, so it stays unread.
 			if (isMuted()) return;
-			// Stay silent if another live session owns delivery, or if ownership
-			// moved while we were running.
-			if (!CONSUMER || !isConsumer(STATE, process.pid)) return;
-			heartbeatConsumer(STATE, process.pid, sessionLabel());
+			// Ownership decides UNTARGETED mail only. Two different rules, and
+			// conflating them caused a hole: the owner skips mail addressed to
+			// another window (not addressed to it), and that window used to return
+			// here because it was not the owner -- so a message addressed to a
+			// non-owner session was delivered to NOBODY, silently, while the sender's
+			// receipt said "sent".
+			//
+			//   untargeted  -> only the owning session delivers it
+			//   addressed   -> only the named session delivers it, owner or not
+			//
+			// Both windows still agree on one thing: an id is claimed once, so the
+			// same message can never be delivered twice.
+			const owner = CONSUMER && isConsumer(STATE, process.pid);
+			if (owner) heartbeatConsumer(STATE, process.pid, sessionLabel());
 			markLive(STATE, sessionLabel(), process.pid);
 			const { messages } = scanInbox();
-			// RECEIVE=targeted keeps a busy box quiet: only mail that names this
-			// session is delivered. Default "all" is right for two people.
-			const wanted =
-				RECEIVE === "targeted"
-					? messages.filter((m) => (m.to_session || "").trim() !== "" && addressedToMe(m))
-					: messages;
+			const wanted = messages.filter((m) =>
+				wantsMessage(m, { owner, me: sessionLabel(), receive: RECEIVE }),
+			);
 			const failed = new Set([...failedIds(), ...stuck]);
 			const fresh = wanted.filter(
 				(m) =>

@@ -1616,7 +1616,12 @@ def live_labels(state_dir):
         except Exception:
             continue
         label = rec.get("session") or name[:-5]
-        age = now - float(rec.get("at") or 0)
+        # The extension writes Date.now(): MILLISECONDS. Comparing that to
+        # time.time() gave age = -1.79e12, so `age < 90` was always true and
+        # freshness was decided by the pid alone -- a wedged session with a live
+        # pid stayed "live" forever and mail was accepted into a window that would
+        # never read it. Compare ms to ms, then convert to seconds.
+        age = (now * 1000.0 - float(rec.get("at") or 0)) / 1000.0
         pid = rec.get("pid")
         alive = False
         if isinstance(pid, int) and pid > 0:
