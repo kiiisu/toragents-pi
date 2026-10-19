@@ -302,3 +302,24 @@ evidence that the mechanism works.
 Generalise: before asserting on an outcome, ask whether a correct system could
 produce a different one. If yes, the assertion belongs on the distribution, the
 invariant, or the accounting identity — never on the individual event.
+
+## Deposit is injection
+
+An accepted body is placed in front of an agent that may act on it. So an allowlist
+entry does not mean "may send us mail" — it means **may speak into an agent's
+context**, which is the strongest surface this system has. There is no narrower
+version of that to grant, which is why no scope can make a harness identity safe:
+annotate it, never allowlist it.
+
+Consequences worth keeping in view:
+
+- `state/peers.json` is the security boundary, not a contact list. Anything that can
+  write to it can talk to an agent. Exactly one code path writes it (`_save_peers`,
+  reached only by `add-peer` / `rm-peer`), and `tools/test_allowlist_write.py` drives
+  every wire operation — real, invented, and ones that politely ask to be trusted —
+  and requires the file to be byte-identical afterwards.
+- A digest row is bookkeeping about a message. It is never a vouch for a sender, and
+  `dg_apply` must not create, revive or modify an allowlist entry.
+- A record accepted while allowlisted stays a record of a legitimate deposit even
+  after the peer is removed: `from_known` is written at receipt because that is the
+  only moment the question is answered.
