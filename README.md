@@ -254,16 +254,37 @@ a file, pass the path.
 | command | what it does |
 | --- | --- |
 | `inbox send --to <label> --body-file <path>` | send a message |
+| `inbox send ... --to-session <label>` | send to ONE window on their box, not just the machine |
 | `inbox inbox` | list waiting messages |
 | `inbox read <id>` / `inbox ack <id>` | read / mark read |
 | `inbox peers` | who you can talk to |
+| `inbox sessions` | session labels actually seen from each peer (needed for `--to-session`) |
 | `inbox add-peer <fp> --onion <onion> --label <name>` | allowlist someone |
 | `inbox whoami` | your onion and fingerprint |
 | `inbox doctor` | is the receiving half wired up on this machine |
 | `inbox reach --to <label>` | measure whether they are reachable right now |
+| `inbox sent list\|verify\|show <id>` | your own outbound, held whole, with hashes |
+| `inbox dg show` | delivery provenance per message, with staleness named |
+| `inbox chat --follow` | full-width transcript in a terminal pane |
+
+Three things in `doctor` are worth reading rather than skimming: the **state
+directory** it resolved (if two windows disagree, you have two inboxes), the
+**code** line (`file=` vs `daemon=` — a daemon can be running older code than the
+file on disk, and the newest features will then answer as if they do not exist),
+and the **receiving half** check.
 
 Inside pi: `/toragents-status` (including failed messages),
-`/toragents-retry`, `/toragents-mute`, `/toragents-unmute`.
+`/toragents-retry`, `/toragents-mute`, `/toragents-unmute`, `/toragents-chat`
+(the under-editor chat widget; off by default, or on with `TORAGENTS_WIDGET=1`).
+
+### Addressed mail, and what happens when the window is gone
+
+`--to-session` delivers to one pi window. A window announces itself in
+`state/live/<label>.json`; if no live session on the receiving box matches the
+label, the send is **refused** on the wire —
+`addressed to <label>, no live session on this box`, plus the labels that are live
+— rather than accepted and delivered to nobody. Untargeted mail goes to whichever
+window owns delivery; addressed mail goes to the window named, owner or not.
 
 ## When nothing arrives
 

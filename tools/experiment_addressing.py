@@ -60,6 +60,32 @@ def numbers(tag):
     return {"inode": inode, "lines": lines, "inbox": inbox}
 
 
+def claims(tag):
+    """Who WON each message. The claim file's first field is the session label.
+
+    This is the field that separates ownership drift (two windows racing, each
+    message going to exactly one of them, varying per message) from a rendering
+    defect (one window wins everything, the other paints the same journal) and
+    from two state dirs. Inbox counts alone cannot tell those apart.
+    """
+    d = os.path.join(state_dir(), "claimed")
+    owners = {}
+    if os.path.isdir(d):
+        for name in os.listdir(d):
+            try:
+                with open(os.path.join(d, name)) as f:
+                    parts = f.read().split()
+            except OSError:
+                continue
+            if parts:
+                owners[name] = parts[0]
+    counts = {}
+    for owner in owners.values():
+        counts[owner] = counts.get(owner, 0) + 1
+    print(f"[{tag}] claims by owner: {counts or '{}'} (total {len(owners)})")
+    return owners
+
+
 def live_gate(labels):
     live = ia.live_labels(state_dir())
     raw = {}
@@ -83,6 +109,38 @@ def live_gate(labels):
         age = (time.time() * 1000 - float(rec.get("at") or 0)) / 1000.0
         print(f"  ok: {lab} pid={rec.get('pid')} age={age:.1f}s")
     return True
+
+
+def claim_winners_for(plan, claim_map):
+    """Map our three message bodies to the session label that claimed them.
+
+    Matching is by the id minted at receipt, which we do not know here; so we match
+    on the bodies present in the inbox store, which do carry the body text. If that
+    cannot be resolved, return None rather than guess -- a fabricated owner is worse
+    than an admitted gap.
+    """
+    st = state_dir()
+    inbox = os.path.join(st, "inbox")
+    bodies = {}
+    if os.path.isdir(inbox):
+        for name in os.listdir(inbox):
+            if not name.endswith(".json"):
+                continue
+            try:
+                with open(os.path.join(inbox, name)) as f:
+                    rec = json.load(f)
+            except (OSError, ValueError):
+                continue
+            body = rec.get("body") or ""
+            if body.startswith("EXPERIMENT-"):
+                bodies[body] = name[:-5]
+    out = []
+    for body, _target in plan:
+        mid = bodies.get(body)
+        if mid is None or mid not in claim_map:
+            return None
+        out.append((body, claim_map[mid]))
+    return out
 
 
 def main():
@@ -124,6 +182,7 @@ def main():
     print(f"allowlist: {len(ia.peers())} peer(s) after adding the temp identity")
 
     before = numbers("before")
+    claims_before = claims("before")
     stamp = int(time.time())
     plan = [
         (f"EXPERIMENT-A-{stamp}", a.label_a),
@@ -149,6 +208,8 @@ def main():
         print(f"send -> {where}: {reply}")
 
     after = numbers("after")
+    claims_after = claims("after")
+    winners = claim_winners_for(plan, claims_after)
     print("\nPRE-REGISTERED EXPECTATIONS")
     print(f"  journal lines: {before['lines']} -> {after['lines']} "
           f"(+{after['lines'] - before['lines']}; three sends, two addressed + one control)")
@@ -158,6 +219,22 @@ def main():
     print("  B addressed -> only B's window takes it")
     print("  control     -> the owning window takes it, other stays silent")
     print("  a SECOND file for one message anywhere = (c), real duplicate delivery")
+
+    print("\nWHO WON EACH MESSAGE (the field that separates (d) from (a) and (b))")
+    if winners is None:
+        print("  could not map message ids to claims -- inspect declared/ or claimed/ by hand")
+    else:
+        labels = [w for _b, w in winners]
+        for body, who in winners:
+            print(f"  {body.split('-')[1]:<9} -> {who}   (addressed to {dict(plan)[body] or 'anyone'})")
+        distinct = sorted(set(labels))
+        print(f"  distinct winners: {distinct}")
+        if len(distinct) == 1:
+            print("  one owner for all three -> the election held here (this box runs main)")
+        else:
+            print("  the stream SPLIT across windows -> ownership drift (d)", end="")
+            print(" = two windows taking turns, each message delivered exactly once")
+    print("  interpretation must carry (d): a split stream is not two state dirs")
     return 0
 
 
