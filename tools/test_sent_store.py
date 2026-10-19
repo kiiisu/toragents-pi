@@ -9,6 +9,14 @@ inbox -- a transcript split down the middle.
 Every test here must be able to fail. The two that matter most:
   - a 5000-char body survives byte-identical (the 2000-char truncation cannot
     quietly come back),
+    A number that travelled without its subject: commit 7c3925c's message says
+    "the 3387-byte message stored byte-identical", measured live over Tor. The
+    message lived once; it never entered the repo, so `grep -r 3387` finds
+    nothing and the number cannot be checked by anyone reading this file. It is
+    kept only as a signpost WITH its address (verified live, 3387 bytes,
+    7c3925c); the evidence is the 5000-char test below, not the story.
+    Rule: a number without its subject is prose wearing a measurement's
+    clothes.
   - a send whose reply was lost stays visible as `failed`/`pending`, because
     recording only successes loses exactly the messages worth knowing about.
 """

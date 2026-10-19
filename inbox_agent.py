@@ -1772,7 +1772,31 @@ def dg_apply(state_dir, fp, dg):
 
 
 def dg_attach(state_dir):
-    """Our current digest: everything we hold from this side, built from the store."""
+    """Our current digest.
+
+    SIDES, which is the thing that was wrong: `a` is what WE minted -- ids we made
+    when the peer's message arrived, so they live in our INBOX. `b` is what THEY
+    minted for our messages, so they live in our SENT store under peer_id. Building
+    `a` from sent (as this did) produces rows whose ids the receiver cannot anchor
+    anywhere: every `a` row reconciled as never-stored, on both machines, while
+    every message sat on disk. dg_apply was right the whole time.
+    """
+    got = {}
+    d_in = os.path.join(state_dir, "inbox")
+    if os.path.isdir(d_in):
+        for name in sorted(os.listdir(d_in), key=lambda x: os.path.getmtime(os.path.join(d_in, x))):
+            if not name.endswith(".json"):
+                continue
+            try:
+                with open(os.path.join(d_in, name)) as f:
+                    r = json.load(f)
+            except Exception:
+                continue
+            body = r.get("body")
+            if not isinstance(body, str) or not r.get("id"):
+                continue
+            got[r["id"]] = {"id": r["id"], "h": dg_hash(body),
+                            "n": len(body.encode("utf-8"))}
     sent = {}
     d = os.path.join(state_dir, "sent")
     if os.path.isdir(d):
@@ -1788,7 +1812,8 @@ def dg_attach(state_dir):
                 continue
             mid = r.get("peer_id") or r.get("local_id")
             sent[mid] = {"id": mid, "h": r.get("sha256"), "n": r.get("len")}
-    return dg_build(list(sent.values())[-DG_MAX_ITEMS:])
+    return dg_build(list(got.values())[-DG_MAX_ITEMS:],
+                    list(sent.values())[-DG_MAX_ITEMS:])
 
 
 def cmd_sessions(a):

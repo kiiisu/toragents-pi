@@ -30,6 +30,7 @@ Run:  python3 tools/test_tier2_acceptance.py            # all of it
 """
 import json
 import os
+import pathlib
 import socket
 import subprocess
 import sys
@@ -299,6 +300,9 @@ class Schema(Pair):
         validate = need_api(inbox_agent, "dg_validate", "§2 (dg schema)")
         ok, why = self._as_pair(validate(dg([item()], surprise="x")))
         self.assertFalse(ok, "an unknown field in dg must be rejected, not ignored")
+        # DIAGNOSTIC (debt): stands for the fact "the refusal names the offending
+        # field". Upgrade to `why["field"] == "surprise"` when dg_validate returns a
+        # {code, field, detail} refutation instead of a sentence.
         self.assertIn("field", why.lower())
 
     def test_hash_must_be_32_hex_not_16(self):
@@ -307,6 +311,8 @@ class Schema(Pair):
             with self.subTest(h=bad[:8] + "…", length=len(bad)):
                 ok, why = self._as_pair(validate(dg([item(h=bad)])))
                 self.assertFalse(ok, f"h={bad!r} was accepted; §1 says exactly 32 lowercase hex")
+                # DIAGNOSTIC (debt): stands for "the refusal names h". Upgrade to
+                # `why["field"] == "h"` with the same refutation shape.
                 self.assertIn("h", why.lower())
 
     def test_id_charset_and_length_are_enforced(self):
@@ -400,6 +406,8 @@ class Schema(Pair):
         validate = need_api(inbox_agent, "dg_validate", "§2 (v must be 1)")
         ok, why = self._as_pair(validate(dg([item()], v=2)))
         self.assertFalse(ok)
+        # DIAGNOSTIC (debt): stands for "the refusal names the version". Upgrade to
+        # `why["field"] == "v"` once refutations carry a field.
         self.assertIn("version", why.lower())
 
     def test_gen_is_clamped_not_rejected(self):
@@ -493,6 +501,9 @@ class Adversarial(Pair):
         second = apply_(self.b.state, self.a.fingerprint, dg([item(id_=UNMINTED, h="b" * 32, n=12)]))
         row = ((second if isinstance(second, dict) else {}).get("rows") or {}).get(UNMINTED, {})
         self.assertEqual(row.get("state"), "mismatch")
+        # DIAGNOSTIC (debt): stands for "the row's reason is the reuse class".
+        # Upgrade to `row["why_code"] == "id-reuse"` when seen.json rows carry a code
+        # beside the sentence.
         self.assertIn("id-reuse", (row.get("why") or ""), "the reason must name the reuse")
         self.assertNotEqual(row.get("h"), "b" * 32, "the first hash must never be overwritten")
 
@@ -588,8 +599,44 @@ class Surface(unittest.TestCase):
                              "NOT IMPLEMENTED: `inbox_agent.py dg show` -- see TIER2-DIGEST.md §7")
             self.assertEqual(proc.returncode, 0,
                              f"§7: nothing here may throw; delivery keeps working. stderr={proc.stderr[:200]}")
+            # DIAGNOSTIC (debt): stands for "the tool reports the missing dependency".
+            # Upgrade to a structured exit code / `{"missing": [...]}` field.
             self.assertIn("unavailable", (proc.stdout + proc.stderr).lower(),
                           "§7: a corrupt store renders the unavailable line")
+
+
+class DebtMarkers(unittest.TestCase):
+    def test_every_substring_assertion_declares_its_debt(self):
+        """A diagnostic must name the fact it stands for and the field it wants.
+
+        A quoted needle in assertIn is a substring guess: it passes on presence,
+        not truth. That is acceptable only while the field carrying the fact is
+        not exposed -- so each one must say which fact it stands in for and what
+        to assert instead. The mark turns that from advice into a rule.
+        (kisu's refinement, 2026-10-19: the label is a debt marker, not a warning.)
+        """
+        import ast as _ast
+        src = pathlib.Path(__file__).read_text()
+        lines = src.splitlines()
+        tree = _ast.parse(src)
+        offenders = []
+        for node in _ast.walk(tree):
+            if not isinstance(node, _ast.Call):
+                continue
+            f = node.func
+            if getattr(f, "attr", None) != "assertIn" or not node.args:
+                continue
+            needle = node.args[0]
+            if not (isinstance(needle, _ast.Constant) and isinstance(needle.value, str)):
+                continue                      # a variable needle tests membership
+            window = "\n".join(lines[max(0, node.lineno - 5):node.lineno])
+            if "DIAGNOSTIC (debt):" not in window:
+                offenders.append(node.lineno)
+        self.assertFalse(
+            offenders,
+            f"assertIn with a quoted needle and no DIAGNOSTIC (debt) note at lines {offenders}: "
+            "say which fact it stands for and which field to assert instead")
+
 
 
 if __name__ == "__main__":
