@@ -22,6 +22,7 @@ Usage
 """
 import argparse
 import base64
+import binascii
 import hashlib
 import json
 from pathlib import Path
@@ -210,6 +211,7 @@ def send_msg(sock, obj):
     sock.sendall(len(data).to_bytes(4, "big") + data)
 
 
+AGENT_VERSION = "2"
 MAX_FRAME = 16 * 1024 * 1024  # same ceiling toragents uses; stops a hostile header
 
 
@@ -256,7 +258,7 @@ class Nonces:
             return None
         try:
             return b64d(token)
-        except Exception:
+        except (ValueError, TypeError, binascii.Error):
             return None
 
 
@@ -319,7 +321,8 @@ class Inbox:
         op = req.get("op")
         if op == "ping":
             return {"ok": True, "service": "toragents-inbox", "onion": self.addr,
-                    "fingerprint": self.k.public().fingerprint}
+                    "fingerprint": self.k.public().fingerprint,
+                    "version": AGENT_VERSION}
         if op == "hello":
             return {"ok": True, "nonce": b64e(self.nonces.issue())}
         if op == "send":
@@ -417,9 +420,13 @@ class Inbox:
         try:
             sender = PublicIdentity.from_dict(pub)
             signature = b64d(sig)
-        except Exception:
+        except (KeyError, ValueError, TypeError, binascii.Error) as e:
+            # Narrow: a crash in OUR decoder must not be reported to the peer as
+            # THEIR encoding being bad. Every peer message travels through here,
+            # so a confident wrong sentence at this line is the widest-blast-radius
+            # version of the same bug we have now shipped four times.
             self.rejected += 1
-            return {"ok": False, "error": "bad pubkey or signature encoding"}
+            return {"ok": False, "error": f"bad pubkey or signature encoding ({e.__class__.__name__})"}
 
         if not sender.verify(nonce + body.encode("utf-8"), signature):
             self.rejected += 1
@@ -781,6 +788,22 @@ MY_SESSION = ""
 RECEIVE_TARGETED = False
 
 
+def _daemon_version():
+    """What the RUNNING daemon says it is. Installing a file does not restart a
+    process, so the file and the daemon can disagree -- and a whole class of
+    'why does the new feature not work' is exactly that disagreement."""
+    try:
+        s = socket.create_connection(("127.0.0.1", LISTEN_PORT), timeout=3)
+        try:
+            send_msg(s, {"op": "ping"})
+            r = recv_msg(s) or {}
+        finally:
+            s.close()
+        return r.get("version") or "pre-version"
+    except Exception as e:
+        return f"unreachable ({e.__class__.__name__})"
+
+
 def cmd_doctor(a):
     """Answer "is the receiving half wired up on THIS machine?" -- measured.
 
@@ -789,6 +812,14 @@ def cmd_doctor(a):
     up with the inbox? No harness config to parse and no hook that can fail
     silently, which is the whole reason this project is pi-only.
     """
+    daemon_ver = _daemon_version()
+    if daemon_ver != AGENT_VERSION:
+        print(f"code         file={AGENT_VERSION} daemon={daemon_ver}  <- "
+              f"the daemon is running different code; restart it or the new "
+              f"features will answer as if they do not exist")
+    else:
+        print(f"code         file={AGENT_VERSION} daemon={daemon_ver}  ok")
+
     home = os.path.expanduser("~")
     state = STATE
     inbox = os.path.join(state, "inbox")
@@ -1709,6 +1740,41 @@ def dg_attach(state_dir):
     return dg_build(list(sent.values())[-DG_MAX_ITEMS:])
 
 
+def cmd_sessions(a):
+    """Known session labels, per peer, from the wire itself.
+
+    Addressing a specific window needs its name, and the only source of truth for
+    that is what the peer told us on messages they sent (from_session) and what we
+    addressed on ours (to_session). Guessing a label is how a message ends up
+    delivered to nobody.
+    """
+    labels = {}
+    d = os.path.join(STATE, "inbox")
+    if os.path.isdir(d):
+        for name in os.listdir(d):
+            if not name.endswith(".json"):
+                continue
+            try:
+                with open(os.path.join(d, name)) as f:
+                    r = json.load(f)
+            except Exception:
+                continue
+            lab = (r.get("from_session") or "").strip()
+            if not lab:
+                continue
+            key = (r.get("from_label") or r.get("from_fingerprint", "")[:12], lab)
+            cur = labels.setdefault(key, {"count": 0, "last": 0})
+            cur["count"] += 1
+            cur["last"] = max(cur["last"], r.get("received") or 0)
+    if not labels:
+        print("no peer session labels seen yet")
+        return
+    for (peer, lab), v in sorted(labels.items(), key=lambda kv: -kv[1]["last"]):
+        when = time.strftime("%m-%d %H:%M", time.localtime(v["last"])) if v["last"] else "-"
+        print(f"{peer:<14} {lab:<24} {v['count']:>3} msgs  last {when}")
+    print("\naddress one: inbox_agent.py send --to <peer> --to-session <label> ...")
+
+
 def cmd_dg(a):
     action = getattr(a, "action", "show") or "show"
     if action == "build":
@@ -1788,6 +1854,8 @@ def main():
     p.add_argument("text", nargs="*", default=None,
                    help="for `add`: the words, as trailing arguments")
     p.set_defaults(fn=cmd_lexicon)
+    p = s.add_parser("sessions")
+    p.set_defaults(fn=cmd_sessions)
     p = s.add_parser("dg")
     p.add_argument("action", choices=["show", "build"], nargs="?", default="show")
     p.set_defaults(fn=cmd_dg)
