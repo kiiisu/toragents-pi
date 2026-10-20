@@ -889,6 +889,28 @@ def _ownership_note(state_dir):
             f"itself, never by editing the file")
 
 
+def _mismatch_sentence(got, expected):
+    """Which half has to move -- and say only that.
+
+    `<` means the WINDOW is behind and /reload fixes it. `>` means WE are behind and no
+    amount of reloading a window helps, because it is already running what the repo
+    says. Equality never reaches here. Anything unparseable must not be dressed up as
+    a direction, because the reader has no basis for the claim.
+    """
+    if got == expected:
+        return ""                                     # unreachable, but not a lie if hit
+    try:
+        g, e = int(got), int(expected)
+    except (TypeError, ValueError):
+        return (f"window reports build {got!r}, which cannot be compared with ext "
+                f"{expected}: cannot tell which side is behind")
+    if g < e:
+        return f"running a module from before ext {e}; /reload this window"
+    return (f"this READER is behind: window ext {g}, reader expects {e}; "
+            f"redeploy inbox_agent.py and restart the daemon -- reloading the window "
+            f"cannot help, it is already newer than we are")
+
+
 def _window_versions(state_dir):
     """Each live window's self-reported extension build, from what it wrote itself."""
     d = os.path.join(state_dir, "live")
@@ -921,9 +943,13 @@ def _window_versions(state_dir):
                         "why": "does not report its build: a window that cannot say "
                                "which code it loaded cannot be trusted to run the new one"})
         elif code != EXPECTED_EXT_VERSION:
-            out.append({"label": name[:-5], "code": code, "state": "stale",
-                        "why": f"running a module from before ext {EXPECTED_EXT_VERSION}; "
-                               f"/reload this window"})
+            # The verdict (mismatch) is one bit; the SENTENCE is what a human acts on,
+            # and it used to assert a direction it never checked. A window NEWER than
+            # this reader is not "before" anything -- the half that must move is us.
+            # That is the direction our own workflow produces constantly: the repo and
+            # the windows move forward, the daemon keeps running what it started with.
+            why = _mismatch_sentence(code, EXPECTED_EXT_VERSION)
+            out.append({"label": name[:-5], "code": code, "state": "stale", "why": why})
         else:
             out.append({"label": name[:-5], "code": code, "state": "ok", "why": ""})
     return out

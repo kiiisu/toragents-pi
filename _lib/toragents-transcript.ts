@@ -15,6 +15,7 @@
  *      whose stored copy was cut.
  */
 
+import { createHash } from "node:crypto";
 import {
 	mkdirSync,
 	readFileSync,
@@ -142,7 +143,23 @@ export function renderChat(width = 72): string[] {
  * anything on disk the transcript never saw is still shown. A panel that hides
  * mail because a different window consumed it is lying twice.
  */
-export type Said = { at: number; dir: "in" | "out"; peer: string; id: string; body: string };
+export type Said = {
+	at: number;
+	dir: "in" | "out";
+	peer: string;
+	id: string;
+	body: string;
+	/**
+	 * Id of the earlier message this one is a byte-identical repeat of, if any.
+	 *
+	 * At-least-once delivery plus recorded-not-enforced dedup means the same
+	 * letter can legitimately arrive twice. Hiding the second copy would be a lie
+	 * ("did the wire stutter?"), so it is kept and marked instead -- kisu's point,
+	 * and the same primitive the footer already uses to stop counting retries as
+	 * letters.
+	 */
+	repeatOf?: string;
+};
 
 function prefixMatch(full: string, cut: string): boolean {
 	const head = String(cut || "").slice(0, 160);
@@ -168,6 +185,33 @@ function sentStore(): any[] {
 }
 
 export function readThread(): Said[] {
+	const rows = readThreadRaw();
+	return markRepeats(rows);
+}
+
+/**
+ * Flag byte-identical repeats, keeping the first occurrence as the original.
+ *
+ * Exact sha256 of the body, not a similarity score: two letters that differ by a
+ * character are two letters, and calling them a repeat would hide a real message.
+ */
+export function markRepeats(rows: Said[]): Said[] {
+	const firstSeen = new Map<string, Said>();
+	const out: Said[] = [];
+	for (const row of rows) {
+		const hash = createHash("sha256").update(row.body).digest("hex");
+		const original = firstSeen.get(hash);
+		if (original && original.id !== row.id) {
+			out.push({ ...row, repeatOf: original.id || String(original.at) });
+			continue;
+		}
+		if (!original) firstSeen.set(hash, row);
+		out.push({ ...row });
+	}
+	return out;
+}
+
+function readThreadRaw(): Said[] {
 	const inbox = new Map<string, { body: string; peer: string; at: number }>();
 	try {
 		for (const n of readdirSync(INBOX)) {

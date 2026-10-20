@@ -69,7 +69,7 @@ import {
  * Self-declared for now, and reported when the pane mounts. It is not yet consumed
  * by doctor; when it is, it should come from here rather than from a second copy.
  */
-export const PANEL_VERSION = 4;
+export const PANEL_VERSION = 5;
 
 const WIDTH_DEFAULT = 46;
 const MIN_TERMINAL = 110;
@@ -341,10 +341,18 @@ export function renderColumn(
 		const arrow = m.dir === "out" ? "→" : "←";
 		const when = new Date(m.at).toTimeString().slice(0, 5);
 
+		// A repeat is shown, never hidden: a letter that arrived twice is a fact
+		// about the wire, and the badge is cheaper than the human filing a bug
+		// against his own machine for stuttering.
+		const repeatOf = m.repeatOf ? msgs.find((x) => x.id === m.repeatOf) : undefined;
+		const repeatTag = m.repeatOf
+			? accent(`↑ repeat${repeatOf ? ` of ${new Date(repeatOf.at).toTimeString().slice(0, 5)}` : ""}`)
+			: "";
 		const meta = [
 			`${isSel ? accent("›") : " "} ${m.dir === "out" ? muted(arrow) : accent(arrow)} ${m.peer}`,
 			dim(when),
 			dim(chars(m.body.length)),
+			repeatTag,
 			unread ? accent("●") : "",
 		]
 			.filter(Boolean)
@@ -363,7 +371,9 @@ export function renderColumn(
 			.filter(Boolean)
 			.join("\n");
 		const bodyLines = wrapBlock(open ? m.body : previewText, inner - 2);
-		if (open) {
+		if (!open && m.repeatOf) {
+			lines.push(truncateToWidth(dim(`   ↑ byte-identical repeat — enter opens it anyway`), width, ""));
+		} else if (open) {
 			for (const l of bodyLines) lines.push(truncateToWidth(`   ${l}`, width, ""));
 			lines.push(dim(`   ⌃ collapse`));
 		} else {
@@ -439,6 +449,7 @@ export function waitingOn(msgs: Said[], replies: Record<string, number> = {}): {
 		// One timestamp for "I sent something" was worse than useless -- a letter to
 		// kisu silenced a question from somebody else and the header went quiet on a
 		// message nobody had answered.
+		if (msgs[i].repeatOf) continue; // the same letter twice is still one letter
 		if (msgs[i].at <= (replies[msgs[i].peer] ?? 0)) break;
 		count++;
 		if (!peers.includes(msgs[i].peer)) peers.push(msgs[i].peer);
@@ -462,7 +473,7 @@ export function statusSummary(
 		if (waiting.peers.length === 1) return `${waiting.peers[0]} waiting`;
 		return `${waiting.count} waiting`;
 	}
-	const unread = msgs.filter((m) => m.dir === "in" && !seen.has(keyOf(m))).length;
+	const unread = msgs.filter((m) => m.dir === "in" && !m.repeatOf && !seen.has(keyOf(m))).length;
 	return unread > 0 ? `${unread} unread` : "";
 }
 

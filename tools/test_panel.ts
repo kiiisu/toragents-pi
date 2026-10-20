@@ -115,7 +115,7 @@ process.env.TORAGENTS_STATE = STATE;
 process.env.TORAGENTS_HOME = dirname(STATE);
 delete process.env.TORAGENTS_PANEL;
 
-const { readThread, threadSignature, tldr } = await import("../_lib/toragents-transcript.ts");
+const { markRepeats, readThread, threadSignature, tldr } = await import("../_lib/toragents-transcript.ts");
 const { SideColumn, clampColumnWidth, dividerIntent, parseSgrMouse } = await import("../_lib/toragents-side-column.ts");
 const { PANEL_VERSION, repliesByPeer, renderColumn, renderFooter, renderStrip, statusSummary, subject, waitingOn } = await import("../toragents-panel.ts");
 const { POLICY_DEFAULTS, isReceiver, panelMode, policyPath, readPolicy, writePanelWidth } = await import("../_lib/toragents-policy.ts");
@@ -125,7 +125,7 @@ const theme = { fg: (_c: string, s: string) => s, bold: (s: string) => s };
 // The reader's self-declared version, pinned the way EXT_VERSION is: a change to how
 // the pane behaves must arrive with a bump, or a window loaded before it will keep
 // rendering the old shape and look healthy. Change this pair together, deliberately.
-ok(PANEL_VERSION === 4, `the reader is panel v4 (found v${PANEL_VERSION}) — bump both sides together`);
+ok(PANEL_VERSION === 5, `the reader is panel v5 (found v${PANEL_VERSION}) — bump both sides together`);
 
 // ── 1. the transcript merge ────────────────────────────────────────────────
 const rows = readThread();
@@ -586,6 +586,43 @@ for (const width of [28, 46, 100]) {
 	// Including acknowledged sends: an ack is still evidence you wrote to them, and
 	// the newest evidence is what ends the wait.
 	ok(f.sentByPeer.kisu === 3_000_000, `sends are tracked per correspondent (kisu at ${f.sentByPeer.kisu})`);
+}
+
+// ── 11. a letter that arrived twice is shown, and says so ─────────────────
+//
+// At-least-once delivery plus recorded-not-enforced dedup means a duplicate is a
+// legitimate outcome, not a bug. kisu's requirement, and the right one: the second
+// copy stays visible and is marked, because the alternative is the human reading
+// his own machine stutter and filing it against the wrong part of the system.
+{
+	const dupBody = "liam. tier confirmed, and the receipt is uglier than your estimate.\n\nsecond paragraph.";
+	const rowsDup = [
+		{ at: 1000, dir: "in" as const, peer: "kisu", id: "orig1", body: dupBody },
+		{ at: 1500, dir: "out" as const, peer: "kisu", id: "sent1", body: "my reply, distinct." },
+		{ at: 2000, dir: "in" as const, peer: "kisu", id: "copy1", body: dupBody },
+		{ at: 2500, dir: "in" as const, peer: "kisu", id: "other1", body: "a different letter entirely." },
+	];
+	const marked = markRepeats(rowsDup);
+	ok(marked[0].repeatOf === undefined, "the first arrival is the letter, not a repeat");
+	ok(marked[2].repeatOf === "orig1", "the second arrival points at the one it repeats");
+	ok(marked[1].repeatOf === undefined && marked[3].repeatOf === undefined, "distinct letters are never marked");
+	ok(markRepeats(marked).filter((m) => m.repeatOf).length === 1, "marking twice does not invent a second repeat");
+	ok(markRepeats(rowsDup).length === rowsDup.length, "nothing is dropped — a repeat is a fact, not noise to hide");
+
+	const probeDup = { selected: 2, expanded: new Set<string>(), seen: new Set<string>(), focused: false, top: 0 };
+	const dupLines = renderColumn(marked, 46, 30, probeDup, null).lines.join("\n");
+	ok(/repeat/.test(dupLines), "the repeat is labelled in the list");
+	ok(/repeat of \d\d:\d\d/.test(dupLines) || /repeat of/.test(dupLines), "the label says which letter it repeats");
+	ok(dupLines.includes("byte-identical"), "collapsed, it says why instead of repeating the same two lines");
+	ok((dupLines.match(/tier confirmed/g) ?? []).length <= 1, "the same text is not shown twice in previews");
+
+	// A repeat is not a second question.
+	ok(waitingOn(marked).count === 1, "a repeat does not add a wait: one distinct letter is waiting, not two");
+	// Answer kisu and the wait is gone, which is the only way to see the unread count.
+	const answered = statusSummary(marked, new Set<string>(), { kisu: 9_999 });
+	ok(answered === "2 unread", `unread counts letters, not copies (got "${answered}")`);
+	ok(waitingOn([{ at: 1000, dir: "in" as const, peer: "kisu", id: "a", body: dupBody }, { at: 2000, dir: "in" as const, peer: "kisu", id: "b", body: dupBody, repeatOf: "a" }]).count === 1,
+		"one letter that arrived twice is one letter waiting");
 }
 
 console.log(`\n${fails.length === 0 ? "ALL PASS" : "FAIL " + fails.length}`);

@@ -23,6 +23,11 @@ const at = (y: number, mo: number, d: number, h: number, mi: number) =>
 	new Date(y, mo, d, h, mi, 0).getTime();
 
 const stamp = (t: number) => String(mod.stampFor(t, now));
+function startOfToday(): number {
+	const d = new Date();
+	d.setHours(0, 0, 0, 0);
+	return d.getTime();
+}
 
 const checks: Array<[string, boolean]> = [
 	["same day is bare HH:MM", stamp(at(2026, 9, 19, 9, 5)) === "09:05"],
@@ -40,7 +45,12 @@ const checks: Array<[string, boolean]> = [
 writeFileSync(
 	join(STATE, "chat.jsonl"),
 	[
-		{ at: at(2026, 9, 18, 20, 10), dir: "in", peer: "maestro-pc", id: "old1", body: "OLDROW" },
+		// "One minute before today started" -- derived from the real clock because
+	// renderChat stamps against Date.now(). A fixture pinned to one calendar day passes
+	// on that day and fails forever after; the unit checks above may pin now, the
+	// integration check cannot, because it exercises the real path. This instant is
+	// always calendar-yesterday AND always under 24h old, at any hour the suite runs.
+	{ at: startOfToday() - 60_000, dir: "in", peer: "maestro-pc", id: "old1", body: "OLDROW" },
 		{ at: Date.now(), dir: "in", peer: "kisu", id: "new1", body: "NEWROW" },
 	]
 		.map((r) => JSON.stringify(r))
