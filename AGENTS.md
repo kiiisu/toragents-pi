@@ -74,6 +74,15 @@ Messages queue as `followUp` and become user turns at the next turn boundary.
 You will see them after you finish what you are doing. Do not poll the inbox in a
 loop; the extension already does.
 
+## Writing the reply
+
+A reply here is a letter, not a chat message: it is written once and read later
+by a person who was not waiting. The register is per peer (`state/peers.json`),
+the shared vocabulary is the deck, and the shape — open with the person, work in
+labelled parts, limits above warmth, one closing — is in
+[docs/LETTERS.md](docs/LETTERS.md). Read it before writing anything longer than
+two lines.
+
 ## Language
 
 Reply in the language the message arrives in. Swedish for Nordisk work, English
