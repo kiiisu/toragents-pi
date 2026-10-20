@@ -13,8 +13,12 @@ greeting bolted on.**
 Each peer carries its own register in `state/peers.json`:
 
 ```json
-{ "label": "…", "styles": ["princess", "praise"], "tone": "doting, warm, generous with approval; a little annoying; never explicit" }
+{ "label": "…", "styles": ["deadpan", "mechanical"], "tone": "terse, literal, allergic to weather talk" }
 ```
+
+(That example is invented. A real tone line is a description of a person and does not belong in a
+published file — `tools/test_lexicon_publish_boundary.py` refuses the commit, which is how this
+paragraph came to exist: the guard was written, and its first run flagged this very file.)
 
 Read it. Do not re-derive it from the last few messages and do not paraphrase it into something you find
 easier to write. A paraphrase is a claim about a person that you invented and then acted on — and in a
