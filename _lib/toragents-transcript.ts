@@ -436,7 +436,12 @@ export function writeSnapshot(rows: Said[]): boolean {
  *   unsent     sent/ records where `state` is not an acknowledgement. "unknown"
  *              means the transport itself cannot say whether it landed, and
  *              hiding that behind a tick would be the lie this whole project is
- *              built to avoid.
+ *              built to avoid. Which states count as acknowledgement is a closed
+ *              list rather than "anything that is not pending": the transport
+ *              writes pending, unknown, confirmed and refused, and treating
+ *              unknown ones as unsent by default reported 92 unsent letters
+ *              where the honest number was 8 (88 confirmed rows counted as
+ *              failures, because the old list only knew words nothing writes).
  *   dark       age of the oldest queued letter: how long the peer has been out
  *              of reach, for as long as the queue has been trying.
  *
@@ -467,6 +472,18 @@ export interface MailFacts {
 	strangers: number;
 	unsent: number;
 }
+
+/**
+ * States that mean "the body arrived". `acked`/`delivered` are here because some
+ * callers and older records use them; `confirmed` is what this transport actually
+ * writes on a verdict; `superseded` is a stranded sibling attempt whose body was
+ * delivered by another attempt of the same letter (see the parent-close review on
+ * PR #2) -- the body arrived, so it is not unsent.
+ *
+ * Deliberately closed: adding a state means deciding what it claims. `pending`,
+ * `unknown` and `refused` are not in it, and no future state joins by accident.
+ */
+const ACKNOWLEDGED = new Set(["acked", "delivered", "confirmed", "superseded"]);
 
 const FACTS_EMPTY: MailFacts = {
 	lastSent: null,
@@ -541,7 +558,7 @@ export function readMailFacts(stateDir = STATE): MailFacts {
 			if (peer && (!facts.sentByPeer[peer] || at > facts.sentByPeer[peer])) facts.sentByPeer[peer] = at;
 		}
 		const state = String(rec?.state || "");
-		if (!state || state === "acked" || state === "delivered") continue;
+		if (!state || ACKNOWLEDGED.has(state)) continue;
 		const key = `${rec?.to || "?"}|${rec?.sha256 || rec?.local_id || "?"}`;
 		unconfirmed.add(key);
 	}

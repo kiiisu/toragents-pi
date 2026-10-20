@@ -625,6 +625,42 @@ for (const width of [28, 46, 100]) {
 		"one letter that arrived twice is one letter waiting");
 }
 
+// ── 12. "unconfirmed" is a closed list, because the open one lied ──────────
+//
+// Measured on the real mailbox: 180 sent rows, 88 confirmed, 89 unknown, 3 pending.
+// The reader skipped only "acked"/"delivered" -- words nothing in this transport
+// writes -- so it reported 92 unconfirmed letters where the honest number was 8.
+// The footer had been telling the human that most of his mail never landed.
+{
+	const { readMailFacts } = await import("../_lib/toragents-transcript.ts");
+	const fsMod = await import("node:fs");
+	const osMod = await import("node:os");
+	const pathMod = await import("node:path");
+	const home = fsMod.mkdtempSync(pathMod.join(osMod.tmpdir(), "toragents-ack-"));
+	const st = pathMod.join(home, "state");
+	for (const d of ["sent", "inbox", "outbox"]) fsMod.mkdirSync(pathMod.join(st, d), { recursive: true });
+	const sent = (id: string, state: string, sha: string) =>
+		fsMod.writeFileSync(pathMod.join(st, "sent", `${id}.json`),
+			JSON.stringify({ local_id: id, state, to: "kisu", sha256: sha, at: 1000, body: "x" }));
+
+	sent("a", "confirmed", "sha-a");
+	sent("b", "acked", "sha-b");
+	sent("c", "delivered", "sha-c");
+	sent("d", "superseded", "sha-d");   // body delivered by a sibling attempt
+	sent("e", "pending", "sha-e");
+	sent("f", "unknown", "sha-f");
+	sent("g", "refused", "sha-g");
+	sent("h1", "unknown", "sha-h");      // retries of one letter count once
+	sent("h2", "unknown", "sha-h");
+
+	const facts = readMailFacts(st as any);
+	ok(facts.unsent === 4, `only pending/unknown/refused are unconfirmed: expected 4, got ${facts.unsent}`);
+	ok(facts.unsent !== 7, "a confirmed send is not an unconfirmed one");
+	ok(facts.unsent !== 8, "retries of one letter are one letter");
+	ok(facts.lastSent !== null, "acknowledgement does not erase the send clock");
+	fsMod.rmSync(home, { recursive: true, force: true });
+}
+
 console.log(`\n${fails.length === 0 ? "ALL PASS" : "FAIL " + fails.length}`);
 for (const f of fails) console.log("  - " + f);
 process.exit(fails.length === 0 ? 0 : 1);
