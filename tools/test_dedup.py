@@ -21,9 +21,21 @@ leaks across senders):
   8    the digest never carries dup_of (it is an index of id/h/n only)
   9    the listing marks it, so a human sees it without opening the record
 
-Mutation targets, stated so this file can be shown to fail: drop the message when a
-duplicate is found and check 4 goes red; look up by body without scoping to the sender
-and check 7 goes red; put dup_of into the digest item and check 8 goes red.
+Mutation targets, RUN not just claimed. Each line names the mistake and the check that
+must go red, and each was verified by making the mistake, watching the failure, and
+reverting:
+
+  drop the message on a duplicate         -> 4 red
+  look up by body, ignore the sender      -> 6 red
+  let the index write raise               -> 7b/7c red
+  digest: leak dup_of                     -> 8 red ONLY if dg_build's whitelist is also
+                                             removed. One layer alone survives, because
+                                             dg_attach builds {id,h,n} and dg_build
+                                             rebuilds them as {id,h,n}: two independent
+                                             walls. Check 8 is a contract assertion, not
+                                             a single-mistake detector, and saying so is
+                                             more useful than pretending one edit breaks
+                                             it.
 
 Usage: python3 tools/test_dedup.py
 """
