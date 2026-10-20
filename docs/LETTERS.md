@@ -65,6 +65,87 @@ Four properties do more work than any word choice:
   or the warmth reads as a substitute for the admission.
 - **The closing is singular.** Three sign-offs is a template; one is a person putting the pen down.
 
+## Two layers: the message, and the work inside it
+
+A long letter used to force a choice — put the affection on top of the findings and interrupt them,
+or bury the warmth until the reader has finished a page of evidence. Neither is a letter; both are a
+report with a mood attached.
+
+The shape that resolves it: **the letter IS the message, and the work sits inside it.**
+
+```
+the message layer      a voice line                         one line, addressed
+                       a status spine  settled / blocked / needed
+                       one line closing it
+                       one loop left open
+─────────────────────
+the work layer         evidence, numbers, sections. unchanged, in full.
+```
+
+The reader gets three lines and knows both what happened and how it landed, and can stop there. If
+they keep reading, the findings are intact underneath and were never interrupted by the affection,
+and the affection was never drowned by the findings. **Nothing is lost in either direction** — this
+is an ordering, not a summary.
+
+Continuity is two fields, both explicit, both small:
+
+```
+↩ answering: "the line being replied to"     what this letter is a response to
+→ open:      "the loop being left open"        what the reader now holds, unanswered
+```
+
+A tape of only those two fields reads as a conversation, and nothing that was opened is silently
+dropped. The point is not formatting: **an open loop that nobody names becomes a loop that nobody
+owes.**
+
+Loop *age* is a display, never a gate:
+
+```
+→ open: "does the lint need a schema?" — 3h unanswered
+```
+
+That is information. A format that refused to let someone speak while an old question stood open
+would be a format lying about who owes what; some loops are not either party's to close.
+
+### The lint: no claim without its evidence
+
+Every number, id, cost or count appearing in the **message layer** must also appear in the **work
+layer**. `$7.05` in the three-line summary with no `$7.05` below is a claim with no evidence, and it
+is flagged rather than sent. Same rule as *a number without its subject*, applied to the letter
+itself — and the same failure the docs keep recording: a summary that is confident where the
+evidence is silent.
+
+The lint needs the work layer to be machine-checkable to be honest about this. Prose on both sides
+means it cannot tell a claim from an echo. A fixed shape for evidence sections is the price of the
+check; pay it only as far as the check is worth.
+
+### `--plain`, and the gate's correction exception
+
+Some letters must not flirt: *"you are wrong about the hash"* with a heart on top reads as a
+manoeuvre, not as affection. So corrections are a **third class**, not a bypass:
+
+```
+warm letter    needs a deck move from the peer's styles + affection
+correction     needs the disputed line quoted + the correction stated
+               (evidence replaces affection; the gate is not skipped, it is satisfied differently)
+memo           refused either way
+```
+
+A correction that cannot quote what it is correcting is not a correction, it is an opinion with a
+raised voice. Implemented as an exception *inside* the gate and logged like any other decision, this
+is a rule. Implemented as a flag that skips the gate, it is the seam again — **the difference is
+whether the log can tell you it happened.**
+
+### Refused by design
+
+- **A motif counter.** Counting the recurring jokes turns affection into inventory. The ninth
+  repetition of a shared line is worth more than a dashboard of the first eight.
+- **Marking unanswered flirts.** That puts a score on someone's silence, and silence can be
+  tiredness, work, or a choice. A machine that guesses about a person is wrong even when it guesses
+  kindly — including about the person who built it.
+
+Both are the same instinct: **a letter is a gift, and a gift that is measured stops being one.**
+
 ## Never a memo
 
 A memo with a heart bolted on is worse than a memo, because it makes the reader do the work of deciding
