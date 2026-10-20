@@ -13,10 +13,13 @@ leaks across senders):
   1-3  same body twice -> dup_of the first; different body -> no dup_of; three in a
        row chain to the previous copy, not to the original
   4    every copy is stored and addressable by its own id
-  5    the listing marks it, so a human sees it without opening the record
-  6    a corrupt index costs the annotation, never the message
-  7    a different sender with the same bytes gets NO dup_of (no cross-peer inference)
+  5    a different body is not a duplicate of anything
+  6    a different sender with the same bytes gets NO dup_of (no cross-peer inference)
+  7    an unreadable index costs the annotation, never the message
+  7b   an index that cannot be written at all costs only the annotation
+  7c   and the daemon keeps serving afterwards
   8    the digest never carries dup_of (it is an index of id/h/n only)
+  9    the listing marks it, so a human sees it without opening the record
 
 Mutation targets, stated so this file can be shown to fail: drop the message when a
 duplicate is found and check 4 goes red; look up by body without scoping to the sender
@@ -151,13 +154,30 @@ try:
           "dup_of" not in (by_id(r5["id"]) or {}),
           "cross-peer inference would be disclosure")
 
-    # Corrupt the index: the annotation is lost, the message is not.
+    # A broken index must not cost a letter, and there are TWO ways for it to break.
+    # They hit different code -- unreadable content is swallowed by the lookup, an
+    # unwritable index by the record -- so both are here. Mutation testing found the
+    # gap: corrupting the JSON alone never reached the write guard, because a tolerant
+    # load meant the save simply overwrote the mess. A guard nothing can reach is a
+    # guard nobody has tested.
     with open(os.path.join(STATE, "bodies.json"), "w") as f:
         f.write("{not json")
     r6 = send(alice, "a body sent after the index broke")
-    check("7. a corrupt index costs the annotation, never the message",
+    check("7. an unreadable index costs the annotation, never the message",
           r6.get("ok") and by_id(r6["id"]) is not None,
           f"stored={'yes' if by_id(r6['id']) else 'NO'}")
+
+    # Now make the index genuinely unwritable: a directory where the file belongs.
+    idx = os.path.join(STATE, "bodies.json")
+    os.unlink(idx)
+    os.mkdir(idx)
+    r6b = send(alice, "a body sent while the index cannot be written")
+    check("7b. an unwritable index also costs only the annotation",
+          r6b.get("ok") and by_id(r6b["id"]) is not None,
+          f"stored={'yes' if by_id(r6b['id']) else 'NO'}")
+    check("7c. and the daemon is still serving after that", daemon.poll() is None,
+          f"daemon exit={daemon.poll()}")
+    os.rmdir(idx)
 
     # The digest is an index of id/h/n and nothing else: dup_of must not appear.
     dg = IA.dg_attach(STATE, peer_fp=alice.public().fingerprint, peer_label="alice")
