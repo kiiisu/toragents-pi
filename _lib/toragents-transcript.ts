@@ -159,6 +159,21 @@ export type Said = {
 	 * letters.
 	 */
 	repeatOf?: string;
+	/**
+	 * An inbound row the transcript presents as mail, with no `inbox/` file behind it.
+	 *
+	 * The delivery path stores the file first and appends the row second, so a row
+	 * without a file was not delivered by the transport: it was written into the
+	 * transcript by something else, and then announced, and then shown to a reader
+	 * as a letter from a peer. `TESTNOTIFY-0001` (2026-10-20) did exactly that with a
+	 * peer label, a session name and a fingerprint, and the only defence against it
+	 * was a file lookup nobody performs at 04:00 under a friendly salutation.
+	 *
+	 * Assumes `inbox/` is append-only. If a pruner is ever added, this turns every
+	 * old row into a suspect and the marker has to be re-derived from something that
+	 * survives pruning -- written down here so the assumption is not invisible.
+	 */
+	unbacked?: boolean;
 };
 
 function prefixMatch(full: string, cut: string): boolean {
@@ -242,9 +257,13 @@ function readThreadRaw(): Said[] {
 		const id = String((r as any).id || "");
 		const dir: "in" | "out" = r.dir === "out" ? "out" : "in";
 		let body = String(r.body || "");
+		let unbacked = false;
 		if (dir === "in") {
 			seenIn.add(id);
 			const whole = inbox.get(id);
+			// No file means the transport never wrote this one. Keep the body -- the
+			// human has to read what arrived -- and say where it did not come from.
+			unbacked = !whole;
 			if (whole && whole.body.length > body.length) body = whole.body;
 		} else {
 			const whole = sent.find(
@@ -256,7 +275,9 @@ function readThreadRaw(): Said[] {
 			);
 			if (whole) body = whole.body;
 		}
-		rows.push({ at, dir, peer: String(r.peer || "peer"), id, body });
+		rows.push(unbacked
+			? { at, dir, peer: String(r.peer || "peer"), id, body, unbacked }
+			: { at, dir, peer: String(r.peer || "peer"), id, body });
 	}
 	for (const [id, m] of inbox) {
 		if (seenIn.has(id)) continue;
@@ -471,6 +492,12 @@ export interface MailFacts {
 	lastError: string | null;
 	strangers: number;
 	unsent: number;
+	/**
+	 * Ids the announcement step presented as new mail, with no `inbox/` file behind
+	 * them: `announced − inbox`. The one-line audit of the TESTNOTIFY class, and it
+	 * needs no new state -- both sides are already written by the delivery path.
+	 */
+	ghosts: number;
 }
 
 /**
@@ -496,6 +523,7 @@ const FACTS_EMPTY: MailFacts = {
 	lastError: null,
 	strangers: 0,
 	unsent: 0,
+	ghosts: 0,
 };
 
 let factsCache: { key: string; facts: MailFacts } | null = null;
@@ -546,6 +574,18 @@ export function readMailFacts(stateDir = STATE): MailFacts {
 		}
 	}
 	for (const msg of inbox.rows) if (msg?.from_known === false) facts.strangers++;
+	// Announced but never stored: the announcement reads the transcript, so it will
+	// happily present a hand-written row as new mail. Counting the difference costs
+	// one list and catches the class no body comparison can see.
+	try {
+		const announced = JSON.parse(readFileSync(join(stateDir, "announced.json"), "utf8"));
+		if (Array.isArray(announced)) {
+			const filed = new Set(inbox.rows.map((m: any) => String(m?.id || "")));
+			facts.ghosts = announced.filter((id: any) => typeof id === "string" && id && !filed.has(id)).length;
+		}
+	} catch {
+		/* no announcements yet, or unreadable: absence is not a ghost */
+	}
 	// One letter, one count. A retried letter writes a sent record per attempt
 	// (that is what makes "did it land?" answerable), so counting records would
 	// report five unconfirmed letters where the user wrote two.

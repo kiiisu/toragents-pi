@@ -69,7 +69,7 @@ import {
  * Self-declared for now, and reported when the pane mounts. It is not yet consumed
  * by doctor; when it is, it should come from here rather than from a second copy.
  */
-export const PANEL_VERSION = 5;
+export const PANEL_VERSION = 6;
 
 const WIDTH_DEFAULT = 46;
 const MIN_TERMINAL = 110;
@@ -306,6 +306,13 @@ export function renderFooter(facts: MailFacts, width: number, theme: any): strin
 			out.push(dim(`  ${facts.worstPeer} unreachable${facts.lastError ? ` — ${facts.lastError}` : ""}`));
 		}
 	}
+	// A security fact, so it gets the accented line rather than the dim one: rows the
+	// announcement step presented as new mail with no file behind them. This is the
+	// one class no body comparison can see -- the injected row was a prefix, not a
+	// copy -- and the audit costs nothing because both sides are already written.
+	if (facts.ghosts > 0) {
+		out.push(accent(` ⚠ ${facts.ghosts} announced with no mailbox file`));
+	}
 	const second: string[] = [];
 	if (facts.strangers > 0) second.push(`${facts.strangers} unknown sender${facts.strangers === 1 ? "" : "s"}`);
 	if (facts.unsent > 0) second.push(`${facts.unsent} unconfirmed`);
@@ -348,11 +355,17 @@ export function renderColumn(
 		const repeatTag = m.repeatOf
 			? accent(`↑ repeat${repeatOf ? ` of ${new Date(repeatOf.at).toTimeString().slice(0, 5)}` : ""}`)
 			: "";
+		// A row the transcript presents as mail, with no mailbox file behind it, did
+		// not arrive over the wire: the transport stores the file before it appends
+		// the row. Say it on the row, because a friendly salutation with a peer label
+		// and a session name is exactly the disguise the injection used.
+		const unbackedTag = m.unbacked ? accent("⚠ no mailbox file") : "";
 		const meta = [
 			`${isSel ? accent("›") : " "} ${m.dir === "out" ? muted(arrow) : accent(arrow)} ${m.peer}`,
 			dim(when),
 			dim(chars(m.body.length)),
 			repeatTag,
+			unbackedTag,
 			unread ? accent("●") : "",
 		]
 			.filter(Boolean)

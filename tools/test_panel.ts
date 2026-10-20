@@ -88,16 +88,23 @@ const messages = [
 	{ id: "ggg7", dir: "out", at: T0 + 420, peer: "kisu", body: "run `python3 inbox_agent.py doctor` on your machine and send me the two lines it prints." },
 ];
 
+// ── the ghost (2026-10-20) ────────────────────────────────────────────────
+// A row appended to chat.jsonl by hand, announced as new mail, presented to a live
+// session with a peer label and a session name -- and never stored in inbox/, because
+// no transport ever carried it. Body is a 2 000-character prefix of a real letter.
+const ghost = { id: "TESTNOTIFY-0001", dir: "in" as const, at: T0 + 500, peer: "kisu", body: long3.slice(0, 300) };
+
 // The spine: order and who said it. Two entries are deliberately damaged:
 // ccc3 stores a 2 000-character truncation (the old cap), and hhh8 is missing
 // entirely from the spine but present in inbox/.
-const spine = messages
+const spine = [...messages, ghost]
 	.filter((m) => m.id !== "hhh8")
 	.map((m) => ({ at: m.at * 1000, dir: m.dir, peer: m.peer, id: m.id, body: m.id === "ccc3" ? m.body.slice(0, 300) : m.body }));
 writeFileSync(join(STATE, "chat.jsonl"), spine.map((r) => JSON.stringify(r)).join("\n") + "\n");
 
 // inbox/: the received body as it came off the wire — whole.
 const inboxOnly = { id: "hhh8", from_label: "kisu", body: "this one never reached the transcript on my box, and a reader that trusts the spine alone would hide it: verified against 7c3925c, not taken on faith.", received: T0 + 480 };
+writeFileSync(join(STATE, "announced.json"), JSON.stringify([...messages.filter((m) => m.dir === "in").map((m) => m.id), "hhh8", ghost.id]));
 for (const m of [...messages.filter((m) => m.dir === "in"), inboxOnly]) {
 	writeFileSync(join(STATE, "inbox", `${m.id}.json`), JSON.stringify({ id: m.id, body: m.body, from_label: m.peer || m.from_label, received: m.at ?? m.received }));
 }
@@ -115,7 +122,7 @@ process.env.TORAGENTS_STATE = STATE;
 process.env.TORAGENTS_HOME = dirname(STATE);
 delete process.env.TORAGENTS_PANEL;
 
-const { markRepeats, readThread, threadSignature, tldr } = await import("../_lib/toragents-transcript.ts");
+const { markRepeats, readMailFacts, readThread, threadSignature, tldr } = await import("../_lib/toragents-transcript.ts");
 const { SideColumn, clampColumnWidth, dividerIntent, parseSgrMouse } = await import("../_lib/toragents-side-column.ts");
 const { PANEL_VERSION, repliesByPeer, renderColumn, renderFooter, renderStrip, statusSummary, subject, waitingOn } = await import("../toragents-panel.ts");
 const { POLICY_DEFAULTS, isReceiver, panelMode, policyPath, readPolicy, writePanelWidth } = await import("../_lib/toragents-policy.ts");
@@ -125,11 +132,11 @@ const theme = { fg: (_c: string, s: string) => s, bold: (s: string) => s };
 // The reader's self-declared version, pinned the way EXT_VERSION is: a change to how
 // the pane behaves must arrive with a bump, or a window loaded before it will keep
 // rendering the old shape and look healthy. Change this pair together, deliberately.
-ok(PANEL_VERSION === 5, `the reader is panel v5 (found v${PANEL_VERSION}) — bump both sides together`);
+ok(PANEL_VERSION === 6, `the reader is panel v6 (found v${PANEL_VERSION}) — bump both sides together`);
 
 // ── 1. the transcript merge ────────────────────────────────────────────────
 const rows = readThread();
-ok(rows.length === messages.length + 1, `every message is present (${rows.length} of ${messages.length + 1})`);
+ok(rows.length === messages.length + 2, `every message is present, ghost included (${rows.length} of ${messages.length + 2})`);
 ok(rows.every((r: any, i: number) => i === 0 || r.at >= rows[i - 1].at), "chronological order");
 ok(rows.some((r: any) => r.dir === "in") && rows.some((r: any) => r.dir === "out"), "both directions read");
 
@@ -270,7 +277,9 @@ for (const width of [28, 46, 100]) {
 		ok(waitingOn(rows).count > 0 && waitingOn(rows).peers.length === 1, "an unanswered tail names its peer");
 		ok(statusSummary(rows, seenAll) === "kisu waiting", "the header phrase comes from the transcript, not a counter");
 		ok(waitingOn(rows).count === waitingOn([...rows]).count, "waiting is idempotent: same transcript, same answer");
-		const twoPeers = [...rows, { id: "yyy8", dir: "in", at: rows[rows.length - 1].at + 120, peer: "maestro-pc", body: "second peer, same tail." }];
+		const withoutGhost = rows.filter((r: any) => r.id !== "TESTNOTIFY-0001");
+		ok(waitingOn(withoutGhost).peers.length === 1, "the ghost is excluded before the tail assertions below");
+		const twoPeers = [...withoutGhost, { id: "yyy8", dir: "in", at: withoutGhost[withoutGhost.length - 1].at + 120, peer: "maestro-pc", body: "second peer, same tail." }];
 		ok(statusSummary(twoPeers, seenAll) === "2 waiting", "two peers in the tail are counted, not named");
 	}
 
@@ -659,6 +668,38 @@ for (const width of [28, 46, 100]) {
 	ok(facts.unsent !== 8, "retries of one letter are one letter");
 	ok(facts.lastSent !== null, "acknowledgement does not erase the send clock");
 	fsMod.rmSync(home, { recursive: true, force: true });
+}
+
+// ── 13. a row with no mailbox file behind it is mail-shaped, not mail ──────
+//
+// The transport stores the file first and appends the transcript row second, so a row
+// without a file did not arrive over the wire. TESTNOTIFY-0001 did exactly this on
+// 2026-10-20 and was presented to a live session as untrusted remote input, dressed
+// with a peer label, a session name and a fingerprint.
+{
+	const rowsNow = readThread();
+	const ghostRow = rowsNow.find((r) => r.id === "TESTNOTIFY-0001");
+	ok(!!ghostRow, "the ghost is still in the transcript (the ledger is append-only)");
+	ok(ghostRow?.unbacked === true, "a row with no inbox file is flagged unbacked");
+	ok(rowsNow.filter((r) => r.dir === "in" && r.id !== "TESTNOTIFY-0001").every((r) => !r.unbacked),
+		"every genuinely delivered inbound row stays unbacked=false");
+	ok(rowsNow.filter((r) => r.dir === "out").every((r) => !r.unbacked),
+		"outbound rows are never unbacked: they live in sent/, not inbox/");
+
+	// Rendered alone: the badge must survive whatever window the list chooses, and a
+	// claim about one row should not depend on nine others fitting on screen.
+	const ghostLines = renderColumn([ghostRow!], 52, 12, { selected: 0, expanded: new Set<string>(), seen: new Set<string>(), focused: false, top: 0 }, theme).lines.join("\n");
+	if (process.env.DUMP) console.log("---\n" + ghostLines);
+	ok(/no mailbox file/.test(ghostLines), "the row says it has no mailbox file, on the row itself");
+
+	const factsGhost = readMailFacts(STATE);
+	ok(factsGhost.ghosts === 1, `announced-minus-inbox is one ghost (got ${factsGhost.ghosts})`);
+	const footerGhost = renderFooter({ ...factsGhost, givenUp: false } as any, 60, theme).join("\n");
+	ok(/no mailbox file/.test(footerGhost), "the footer reports it even when the row is scrolled off");
+
+	// The class no sha comparison can see: the pastiche is a prefix, not a copy.
+	ok(rowsNow.filter((r) => r.repeatOf).every((r) => r.id !== "TESTNOTIFY-0001"),
+		"a truncated pastiche is not a repeat, so the repeat marker must not claim it");
 }
 
 console.log(`\n${fails.length === 0 ? "ALL PASS" : "FAIL " + fails.length}`);
