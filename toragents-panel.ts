@@ -69,7 +69,7 @@ import {
  * Self-declared for now, and reported when the pane mounts. It is not yet consumed
  * by doctor; when it is, it should come from here rather than from a second copy.
  */
-export const PANEL_VERSION = 6;
+export const PANEL_VERSION = 7;
 
 const WIDTH_DEFAULT = 46;
 const MIN_TERMINAL = 110;
@@ -312,6 +312,12 @@ export function renderFooter(facts: MailFacts, width: number, theme: any): strin
 	// copy -- and the audit costs nothing because both sides are already written.
 	if (facts.ghosts > 0) {
 		out.push(accent(` ⚠ ${facts.ghosts} announced with no mailbox file`));
+	}
+	// Claimed is worse than announced: a session was fed it and acted as if a letter
+	// had arrived. Still one line, still no new state -- the claim file either has
+	// mail behind it or it does not.
+	if (facts.phantomClaims > 0) {
+		out.push(accent(` ⚠ ${facts.phantomClaims} claimed with no mailbox file`));
 	}
 	const second: string[] = [];
 	if (facts.strangers > 0) second.push(`${facts.strangers} unknown sender${facts.strangers === 1 ? "" : "s"}`);

@@ -104,6 +104,8 @@ writeFileSync(join(STATE, "chat.jsonl"), spine.map((r) => JSON.stringify(r)).joi
 
 // inbox/: the received body as it came off the wire — whole.
 const inboxOnly = { id: "hhh8", from_label: "kisu", body: "this one never reached the transcript on my box, and a reader that trusts the spine alone would hide it: verified against 7c3925c, not taken on faith.", received: T0 + 480 };
+mkdirSync(join(STATE, "claimed"), { recursive: true });
+writeFileSync(join(STATE, "claimed", ghost.id), "stage 1792495710762");
 writeFileSync(join(STATE, "announced.json"), JSON.stringify([...messages.filter((m) => m.dir === "in").map((m) => m.id), "hhh8", ghost.id]));
 for (const m of [...messages.filter((m) => m.dir === "in"), inboxOnly]) {
 	writeFileSync(join(STATE, "inbox", `${m.id}.json`), JSON.stringify({ id: m.id, body: m.body, from_label: m.peer || m.from_label, received: m.at ?? m.received }));
@@ -132,7 +134,7 @@ const theme = { fg: (_c: string, s: string) => s, bold: (s: string) => s };
 // The reader's self-declared version, pinned the way EXT_VERSION is: a change to how
 // the pane behaves must arrive with a bump, or a window loaded before it will keep
 // rendering the old shape and look healthy. Change this pair together, deliberately.
-ok(PANEL_VERSION === 6, `the reader is panel v6 (found v${PANEL_VERSION}) — bump both sides together`);
+ok(PANEL_VERSION === 7, `the reader is panel v7 (found v${PANEL_VERSION}) — bump both sides together`);
 
 // ── 1. the transcript merge ────────────────────────────────────────────────
 const rows = readThread();
@@ -694,6 +696,9 @@ for (const width of [28, 46, 100]) {
 
 	const factsGhost = readMailFacts(STATE);
 	ok(factsGhost.ghosts === 1, `announced-minus-inbox is one ghost (got ${factsGhost.ghosts})`);
+	ok(factsGhost.phantomClaims === 1, `claimed-minus-inbox is one phantom claim (got ${factsGhost.phantomClaims})`);
+	const claimedAllBacked = renderFooter({ ...factsGhost, ghosts: 0, phantomClaims: 0 } as any, 60, theme).join("\n");
+	ok(!/no mailbox file/.test(claimedAllBacked), "a clean mailbox says nothing at all");
 	const footerGhost = renderFooter({ ...factsGhost, givenUp: false } as any, 60, theme).join("\n");
 	ok(/no mailbox file/.test(footerGhost), "the footer reports it even when the row is scrolled off");
 

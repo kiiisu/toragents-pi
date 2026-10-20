@@ -498,6 +498,15 @@ export interface MailFacts {
 	 * needs no new state -- both sides are already written by the delivery path.
 	 */
 	ghosts: number;
+	/**
+	 * `claimed − inbox`: ids a session marked as delivered mail with no letter
+	 * behind them. A separate trail from `ghosts`, because the harm is different —
+	 * an announced ghost was *presented*, a claimed ghost was *consumed*. On
+	 * 2026-10-20 the same id was both: a session claimed the forged row at
+	 * 13:28:30, 90 ms before the row's own timestamp, and was re-presented with it
+	 * six hours later. Claim bookkeeping does not prevent re-presentation.
+	 */
+	phantomClaims: number;
 }
 
 /**
@@ -524,6 +533,7 @@ const FACTS_EMPTY: MailFacts = {
 	strangers: 0,
 	unsent: 0,
 	ghosts: 0,
+	phantomClaims: 0,
 };
 
 let factsCache: { key: string; facts: MailFacts } | null = null;
@@ -585,6 +595,16 @@ export function readMailFacts(stateDir = STATE): MailFacts {
 		}
 	} catch {
 		/* no announcements yet, or unreadable: absence is not a ghost */
+	}
+	// The same audit one layer down. Names only: the claim files carry a session and
+	// a timestamp, but the question here is whether the letter exists at all.
+	try {
+		const filed = new Set(inbox.rows.map((m: any) => String(m?.id || "")));
+		facts.phantomClaims = readdirSync(join(stateDir, "claimed")).filter(
+			(n) => n && !n.startsWith(".") && !filed.has(n),
+		).length;
+	} catch {
+		/* no claimed/ yet */
 	}
 	// One letter, one count. A retried letter writes a sent record per attempt
 	// (that is what makes "did it land?" answerable), so counting records would
