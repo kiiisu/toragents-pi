@@ -21,9 +21,13 @@ Checks:
   9    the CLI emits the documented JSON and the right exit code
   10   doctor prints a clock line, and only when there is something to say
 
-Mutation targets, stated so this file can be shown to fail: use the mean instead of
-the min and check 3 goes red; flip the sign and check 4 goes red; return
-offset_s=0 when there are no samples and check 1 goes red.
+Mutation targets, RUN not just claimed:
+
+  use the mean instead of the min        -> 3 red
+  flip the sign of the offset            -> 4 and 5 red
+  return offset_s=0 when there are none  -> 1 and 2 red
+
+All three verified by making the mistake, watching the failure, and reverting.
 
 Usage: python3 tools/test_skew.py
 """
