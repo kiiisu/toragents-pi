@@ -407,3 +407,30 @@ because a stale pane is cosmetic (an old layout), never a delivery decision.
 When the pane does write a marker, it goes in the same file and the same account as the
 watcher's: one place per window, one meaning per field. A second file would be a second
 account of the same window, which is how the two surfaces drifted in the first place.
+
+## Evidence: a fixture is not an occurrence
+
+### A duplicate demonstrated on manufactured mail
+
+Wrong: the reader's repeat marker (b954821) shipped with a commit message claiming the transcript
+"carries a real duplicate right now — kisu 13:26 and 13:28, same 2000 bytes, different ids".
+
+They are the same 2000 bytes, and only one of them is mail. Verified after `rowan` asked:
+
+    id=c7e183a282b7    inbox/1792495616-c7e183a282b7.json exists; in seen.json and announced.json   REAL
+    id=TESTNOTIFY-0001 no inbox/, sent/ or outbox/ record anywhere; in chat.jsonl and seen.json    INJECTED
+
+`grep -rn TESTNOTIFY` over this repo, the extensions and `inbox_agent.py` returns nothing, so no code
+here writes that id: the row was put into `chat.jsonl` by hand during a notification test.
+
+Tell: the two ids looked like a delivery pair — same body, 93 seconds apart, plausible. What gave it away
+was looking for the *file*, not the row. The transcript is append-only and unvalidated, so it will happily
+hold a row that was never mail, and a marker that reads only `chat.jsonl` cannot tell you which is which.
+
+Rule: when a claim about delivery rests on a pair, verify both members against `inbox/`/`sent/`, not
+against the transcript both of them share. The code is unchanged and still right — byte-identical repeats
+are marked, from whatever source — but its proof is a fixture in `tools/test_panel.ts`, and the first real
+occurrence is still owed. Say "fixture", not "this transcript carries it".
+
+Also worth knowing for the next reader of `chat.jsonl`: nothing refuses a hand-written row, so "it is in
+the transcript" is not evidence that anything was sent.
