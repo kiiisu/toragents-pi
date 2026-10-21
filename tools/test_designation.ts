@@ -23,7 +23,7 @@
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import * as mod from "/mnt/HC_Volume_105587324/toragents-pi/toragents_watch.ts";
+import * as mod from "../toragents_watch.ts";
 
 const checks: Array<[string, boolean]> = [];
 const now = Date.now();
