@@ -376,12 +376,18 @@ export function electConsumer(
 	} catch {
 		/* no election yet */
 	}
+	// "Could not ask" is not "not there". A pid owned by another user answers
+	// EPERM rather than success, and treating that as death is how a front desk
+	// that is very much alive gets declared gone and its mail taken by the next
+	// window to look: on a Linux box running as root, pid 1 is signalable and this
+	// never shows; on any laptop it fires on the first election. Only ESRCH means
+	// the process is gone -- everything else means we are still forbidden to look.
 	const alive = (pid: number) => {
 		try {
 			process.kill(pid, 0);
 			return true;
-		} catch {
-			return false;
+		} catch (e: any) {
+			return e?.code === "EPERM";
 		}
 	};
 	const fresh = prior && now - Number(prior.at || 0) < CONSUMER_STALE_MS;
