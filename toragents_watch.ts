@@ -815,7 +815,7 @@ function scanInbox(): {
  * process can make about itself is what it was compiled with. Bump this whenever the
  * file changes; tools/test_ext_version.py fails if you forget.
  */
-export const EXT_VERSION = "5";
+export const EXT_VERSION = "6";
 
 /**
  * Write our fields into a marker file WITHOUT erasing fields we did not write.
