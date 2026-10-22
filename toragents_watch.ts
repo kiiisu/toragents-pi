@@ -158,6 +158,34 @@ function logSaid(dir: "in" | "out", peer: string, body: string, id: string) {
 	}
 }
 
+/**
+ * Ids this box has actually rendered into a session.
+ *
+ * The transcript row is the only durable proof of delivery: announced.json is a
+ * promise to reconsider, `claimed/<id>` is who took the message, and neither is
+ * evidence that a model read it. Reading the whole file, not the last CHAT_SHOWN
+ * lines, because the question is about ids from days ago.
+ */
+function deliveredIds(): Set<string> {
+	const ids = new Set<string>();
+	let text = "";
+	try {
+		text = readFileSync(CHAT_FILE, "utf8");
+	} catch {
+		return ids;
+	}
+	for (const line of text.split("\n")) {
+		if (!line) continue;
+		try {
+			const row = JSON.parse(line);
+			if (row && row.dir === "in" && typeof row.id === "string") ids.add(row.id);
+		} catch {
+			/* a truncated line is not a row */
+		}
+	}
+	return ids;
+}
+
 function saidLog(): Array<{ at: number; dir: string; peer: string; body: string }> {
 	try {
 		return readFileSync(CHAT_FILE, "utf8")
@@ -1086,7 +1114,7 @@ function scanInbox(): {
  * process can make about itself is what it was compiled with. Bump this whenever the
  * file changes; tools/test_ext_version.py fails if you forget.
  */
-export const EXT_VERSION = "7";
+export const EXT_VERSION = "8";
 
 /**
  * Write our fields into a marker file WITHOUT erasing fields we did not write.
@@ -1215,6 +1243,9 @@ export default function (pi: ExtensionAPI) {
 	const stuck = new Set<string>();
 	let running = false;
 	let seedNotice = "";
+	// Announced, unclaimed and never rendered: the cell that used to be permanent.
+	// Recomputed at session_start, cleared as each one is delivered.
+	let recalled: Set<string> = new Set();
 
 	const deliver = async (
 		ctx: ExtensionContext,
@@ -1235,6 +1266,7 @@ export default function (pi: ExtensionAPI) {
 			for (const m of msgs) {
 				attempts.delete(m.id);
 				logSaid("in", m.from_label || m.from_fingerprint || "peer", m.body, m.id);
+				recalled.delete(m.id); // the row exists now; stop reconsidering it
 			}
 			paintChat(ctx);
 		} catch (err) {
@@ -1357,7 +1389,7 @@ export default function (pi: ExtensionAPI) {
 			const failed = new Set([...failedIds(), ...stuck]);
 			const fresh = wanted.filter(
 				(m) =>
-					!announced.has(m.id) &&
+					(!announced.has(m.id) || recalled.has(m.id)) &&
 					!failed.has(m.id) &&
 					!stuck.has(m.id) &&
 					addressedToMe(m),
@@ -1379,8 +1411,15 @@ export default function (pi: ExtensionAPI) {
 			const mine = batch.filter((m) => claim(m.id));
 			if (mine.length === 0) return; // another session on this box took them
 			const heldBack = fresh.length - mine.length;
+			// In memory only, until the render happens. Writing announced.json BEFORE
+			// `deliver` leaves, on a crash between the two, an id that the retry path
+			// skips (`announced.has`), the orphan healer skips (`onDisk.has`), and
+			// nobody can clear: announced + no claim + no chat row = a letter the peer
+			// holds a receipt for and no model ever saw. The claim is already on disk
+			// before this line, so it is the only marker that needs to precede a
+			// render; the transcript row created by `deliver` is what proves one
+			// happened.
 			for (const m of mine) announced.add(m.id);
-			writeAnnounced(announced);
 			await deliver(ctx, mine, heldBack);
 			writeAnnounced(announced);
 		} finally {
@@ -1417,6 +1456,29 @@ export default function (pi: ExtensionAPI) {
 			/* no claims yet */
 		}
 		if (healed > 0) seedNotice = `${healed} stale claim(s) released for delivery`;
+
+		// The mirror of that cell, and the one that used to have no repair at all:
+		// announced, no claim, no transcript row. The heal above only runs for claims
+		// that have no announced entry, and the tick skips anything announced -- so
+		// an id that reached announced.json and then lost its render was permanent.
+		// Three letters on the peer's box are in exactly this state, 28 hours old,
+		// with their bodies intact on disk. Recall them once, and let the row being
+		// written be what stops it happening twice.
+		recalled = new Set();
+		try {
+			const rows = deliveredIds();
+			const claims = new Set(readdirSync(CLAIM_DIR));
+			const present = new Set(scanInbox().messages.map((m) => m.id));
+			for (const id of onDisk ?? []) {
+				if (!present.has(id) || claims.has(id) || rows.has(id)) continue;
+				recalled.add(id);
+			}
+		} catch {
+			/* nothing to reconcile */
+		}
+		if (recalled.size > 0) {
+			seedNotice = `${recalled.size} message(s) were announced but never shown; delivering them now`;
+		}
 
 		// Who we are, before anything writes a claim or a report.
 		MY_SESSION = resolveSession(ctx);

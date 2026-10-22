@@ -96,6 +96,12 @@ writeFileSync(join(claimsDir, "d.json.claim"), "not json");
 const OWNER_PID = 857931;          // the window
 const OWNER_SESSION = "pi-01a15403";
 eq("a fresh claim is mid-send even when its pid is not the owner's", mod.outboxInFlight(STATE, OWNER_PID, now, OWNER_SESSION).found, true);
+// Pinned as FALSE on purpose: `outbox.py` writes {"pid", "at"} and nothing else, so the
+// writer has no session to give and `named` cannot be true today. A field whose only
+// observed value is false is a comment pretending to be code -- this line says so, and
+// turns red the day the writer starts carrying it, which is when the reader's preference
+// stops being theoretical. The item does not record the SENDER's session at all, so this
+// needs a field at queue time, not an argument at flush time.
 eq("...and it reports that it could not name the owner", mod.outboxInFlight(STATE, OWNER_PID, now, OWNER_SESSION).named, false);
 // isolation matters now that the pid is no longer the key: a stale claim next to a fresh one
 // proves nothing, so this one gets a state dir of its own.
