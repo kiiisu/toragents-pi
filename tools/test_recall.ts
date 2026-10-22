@@ -179,9 +179,73 @@ check("a restarted window recalls nothing once the row exists", sent.length === 
 	const rec = mod.deliveryRecord(STATE, "dead1");
 	check("a tombstone reports its count", typeof rec.count === "number" && rec.count >= 1, JSON.stringify(rec));
 	check("and the epoch the counting started at", typeof rec.epoch === "number", JSON.stringify(rec));
+	check("both records agree, so the source says both", rec.source === "both", JSON.stringify(rec));
 	const never = mod.deliveryRecord(STATE, "never-delivered");
-	check("an uncounted letter reports null, not zero", never.count === null, JSON.stringify(never));
+	check("a letter with no record at all reports null, not zero", never.count === null, JSON.stringify(never));
+	check("and names no source", never.source === null);
 	check("the epoch is not itself mistaken for a letter", !mod.deliveredTombs(STATE).has("_epoch"));
+}
+
+// 5c-bis. the transcript was counting all along: it is the pre-epoch backfill, not a fallback
+{
+	// a letter delivered before tombstones existed: a row, no lines
+	writeFileSync(
+		`${STATE}/chat.jsonl`,
+		readFileSync(`${STATE}/chat.jsonl`, "utf8") +
+			JSON.stringify({ at: Date.now(), dir: "in", peer: "rowan", id: "pre1", body: "before the epoch" }) + "\n",
+	);
+	const pre = mod.deliveryRecord(STATE, "pre1", 1);
+	check("a row alone is a count, not a null", pre.count === 1, JSON.stringify(pre));
+	check("and it names the row as the source", pre.source === "rows", JSON.stringify(pre));
+	check("a letter older than the epoch reports a floor", pre.floor === true, JSON.stringify(pre));
+	// disagreement in the other direction: two tombstones, one row
+	writeFileSync(`${STATE}/delivered/div1`, "s 1 10\ns 2 10\n");
+	writeFileSync(
+		`${STATE}/chat.jsonl`,
+		readFileSync(`${STATE}/chat.jsonl`, "utf8") +
+			JSON.stringify({ at: Date.now(), dir: "in", peer: "rowan", id: "div1", body: "x" }) + "\n",
+	);
+	const div = mod.deliveryRecord(STATE, "div1");
+	check("the record that saw more wins, and is named", div.count === 2 && div.source === "lines", JSON.stringify(div));
+}
+
+// 5c-ter. can the real path produce a repeat at all?
+//
+// The honest answer, measured rather than assumed: no. Either record blocks the recall, so
+// an id with a tombstone OR a row cannot be re-delivered by this product, and a repeat is
+// therefore unreachable today. That matters for the mark: a badge for a state that cannot
+// occur is a fixture pretending to be a feature. Both directions asserted, so the guarantee
+// is pinned rather than described.
+{
+	const base = mod.deliveryRecord(STATE, "dead1").count || 1;
+	// only the transcript is lost
+	rmSync(`${STATE}/delivered/dead1`, { force: true });
+	writeFileSync(`${STATE}/chat.jsonl`, "");
+	// put the tombstone back but drop the row: source must be lines, and no re-delivery
+	writeFileSync(`${STATE}/delivered/dead1`, "s 1 36\n");
+	writeFileSync(`${STATE}/announced.json`, JSON.stringify(["dead1"]));
+	rmSync(`${STATE}/claimed/dead1`, { force: true });
+	const beforeCalls = sent.length;
+	await handlers.session_start({}, ctx);
+	await settle();
+	tick!();
+	await settle();
+	const onlyLines = mod.deliveryRecord(STATE, "dead1");
+	check("a tombstone alone blocks the recall", sent.length === beforeCalls && onlyLines.source === "lines", `calls=${sent.length - beforeCalls} ${JSON.stringify(onlyLines)}`);
+	check("and the count did not grow", onlyLines.count === base, `base=${base} now=${onlyLines.count}`);
+	// only the tombstone is lost
+	rmSync(`${STATE}/delivered/dead1`, { force: true });
+	writeFileSync(
+		`${STATE}/chat.jsonl`,
+		JSON.stringify({ at: Date.now(), dir: "in", peer: "rowan", id: "dead1", body: "x" }) + "\n",
+	);
+	await handlers.session_start({}, ctx);
+	await settle();
+	tick!();
+	await settle();
+	const onlyRows = mod.deliveryRecord(STATE, "dead1");
+	check("a row alone blocks the recall", sent.length === beforeCalls && onlyRows.source === "rows", `calls=${sent.length - beforeCalls} ${JSON.stringify(onlyRows)}`);
+	check("so a count above one is unreachable through this path today", onlyRows.count === base, `base=${base} now=${onlyRows.count}`);
 }
 
 // 5d. an archived body is reported, not silently skipped

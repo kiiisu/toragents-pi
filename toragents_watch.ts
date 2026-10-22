@@ -178,10 +178,20 @@ function logSaid(dir: "in" | "out", peer: string, body: string, id: string) {
  * lines, because the question is about ids from days ago.
  */
 function deliveredIds(): Set<string> {
-	const ids = new Set<string>();
+	return new Set(rowCounts(STATE).keys());
+}
+
+/**
+ * Rows per delivered id. This is the retrospective counter: `logSaid("in", …)` runs once
+ * per message per render, in the same loop as markDelivered, so a re-delivery would have
+ * written a second row with the same id and the field has simply never been asked to
+ * count. It has been counting since before the tombstones existed.
+ */
+function rowCounts(stateDir: string): Map<string, number> {
+	const ids = new Map<string, number>();
 	let text = "";
 	try {
-		text = readFileSync(CHAT_FILE, "utf8");
+		text = readFileSync(join(stateDir, "chat.jsonl"), "utf8");
 	} catch {
 		return ids;
 	}
@@ -189,7 +199,9 @@ function deliveredIds(): Set<string> {
 		if (!line) continue;
 		try {
 			const row = JSON.parse(line);
-			if (row && row.dir === "in" && typeof row.id === "string") ids.add(row.id);
+			if (row && row.dir === "in" && typeof row.id === "string") {
+				ids.set(row.id, (ids.get(row.id) || 0) + 1);
+			}
 		} catch {
 			/* a truncated line is not a row */
 		}
@@ -947,16 +959,26 @@ export function markDelivered(id: string, bodyLen: number): boolean {
 }
 
 /**
- * How many times this box has rendered a letter, and since when it has been counting.
+ * How many times this box has rendered a letter, where the number came from, and whether
+ * it is exact or a floor.
  *
- * `count: null` is not zero: it means no tombstone exists, which for anything delivered
- * before the epoch is a letter whose deliveries were never recorded. Callers that need
- * "did it arrive" can use a row; callers that need "how many" must not read null as one.
+ * Two independent records count renders: a tombstone line per delivery, and a chat.jsonl
+ * row per delivery (`logSaid` runs in the same loop, after the send). Neither is
+ * authoritative over the other, so they are not voted on -- the larger one wins, and the
+ * answer says which record it came from. Post-epoch both are written and normally agree;
+ * a failed tombstone gives rows > lines, a rotated transcript gives lines > rows, and in
+ * both cases the surviving record is the one that saw more.
+ *
+ * `count: null` therefore means "no record at all", which is the only case where nothing
+ * was ever written -- not the pre-epoch case, which the transcript has been answering all
+ * along. `floor` is true when the letter predates the epoch: the count is then at least
+ * this much, and the mark that renders it may not say "once".
  */
 export function deliveryRecord(
 	stateDir: string,
 	id: string,
-): { count: number | null; epoch: number | null } {
+	received = 0,
+): { count: number | null; epoch: number | null; source: "lines" | "rows" | "both" | null; floor: boolean } {
 	let epoch: number | null = null;
 	try {
 		const line = readFileSync(join(stateDir, "delivered", "_epoch"), "utf8").trim();
@@ -965,12 +987,19 @@ export function deliveryRecord(
 	} catch {
 		/* counting has not started here */
 	}
+	let lines = 0;
 	try {
-		const rows = readFileSync(join(stateDir, "delivered", id), "utf8").split("\n").filter(Boolean);
-		return { count: rows.length, epoch };
+		lines = readFileSync(join(stateDir, "delivered", id), "utf8").split("\n").filter(Boolean).length;
 	} catch {
-		return { count: null, epoch };
+		/* never tombstoned */
 	}
+	const rows = rowCounts(stateDir).get(id) ?? 0;
+	const count = Math.max(lines, rows);
+	const source = lines === 0 && rows === 0 ? null : lines === rows ? "both" : lines > rows ? "lines" : "rows";
+	// The letter's own arrival time decides exact-versus-floor, not a per-letter copy of
+	// the epoch: every inbox file already carries `received`.
+	const floor = epoch !== null && received > 0 && received < epoch;
+	return { count: count === 0 ? null : count, epoch, source, floor };
 }
 
 export function deliveredTombs(stateDir: string): Set<string> {
@@ -1198,7 +1227,7 @@ function scanInbox(): {
  * process can make about itself is what it was compiled with. Bump this whenever the
  * file changes; tools/test_ext_version.py fails if you forget.
  */
-export const EXT_VERSION = "11";
+export const EXT_VERSION = "12";
 
 /**
  * Write our fields into a marker file WITHOUT erasing fields we did not write.
