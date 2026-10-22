@@ -120,6 +120,37 @@ check("a restarted window recalls nothing once the row exists", sent.length === 
 	);
 }
 
+// 5b. the tombstone: a delivery record that outlives the transcript
+{
+	const tomb = readFileSync(`${STATE}/delivered/dead1`, "utf8").trim();
+	check("a delivery writes a tombstone naming the window", /^\S+ \d+$/.test(tomb), tomb);
+	check("a tombstone exists for the recalled letter", tomb.length > 0);
+	// The transcript is a convenience; this is the test of whether the recall
+	// depends on it. Blank the rows and restart: the tombstone must still hold.
+	writeFileSync(`${STATE}/chat.jsonl`, "");
+	writeFileSync(`${STATE}/announced.json`, JSON.stringify(["dead1"]));
+	rmSync(`${STATE}/claimed/dead1`, { force: true });
+	const before = sent.length;
+	await handlers.session_start({}, ctx);
+	await settle();
+	tick!();
+	await settle();
+	check(
+		"a rotated transcript does not resurrect a tombstoned letter",
+		sent.length === before,
+		`before=${before} after=${sent.length}`,
+	);
+	// And the other direction, so the check cannot pass by doing nothing: with the
+	// tombstone gone too, the same letter IS recalled.
+	rmSync(`${STATE}/delivered/dead1`, { force: true });
+	await handlers.session_start({}, ctx);
+	await settle();
+	tick!();
+	await settle();
+	check("without a tombstone or a row, it is recalled again", sent.length === before + 1);
+	writeFileSync(`${STATE}/chat.jsonl`, JSON.stringify({ at: Date.now(), dir: "in", id: "dead1", body: "x" }) + "\n");
+}
+
 // 6. a peer's three dead letters would be recovered: bounded, and only with a body
 {
 	rmSync(H + "/state", { recursive: true, force: true });

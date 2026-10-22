@@ -128,6 +128,14 @@ const LIVE_DIR = join(STATE, "live");
 // the kernel arbitrates for us. No lock is needed to decide ownership: the
 // create either wins or gets EEXIST. announced.json stays as a readable mirror.
 const CLAIM_DIR = join(STATE, "claimed");
+// One tombstone per delivered id, and it outlives everything else that could say so.
+//
+// `claimed/<id>` is deleted by the retry path and by adoption; `announced.json` is a
+// promise to reconsider, not a record; `chat.jsonl` is described in this file as a
+// convenience and its bodies are already sliced at 2000 characters. A delivery
+// tombstone is written once, on success, and never removed, so the question "did this
+// arrive" has an answer that does not depend on a structure kept for another purpose.
+const DELIVERED_DIR = join(STATE, "delivered");
 // Delivery that failed permanently goes here. A message that cannot be shown
 // must not look delivered: the peer already has a receipt, so silence is the
 // only thing worse than an error.
@@ -902,6 +910,33 @@ function claim(id: string): boolean {
 	}
 }
 
+/**
+ * Record a delivery that actually happened. Called only from the success path.
+ *
+ * Deliberately a file per id and not a log: a log needs rotation, rotation is a
+ * retention policy, and the one thing this record must never be is somebody's
+ * cleanup candidate. 40 bytes each is cheaper than the alternative, which is a
+ * peer holding a receipt for a letter nobody read.
+ */
+function markDelivered(id: string): void {
+	try {
+		mkdirSync(DELIVERED_DIR, { recursive: true });
+		writeFileSync(join(DELIVERED_DIR, id), `${sessionLabel()} ${Date.now()}\n`);
+	} catch {
+		/* the recall falls back to the transcript; never fail a delivery over this */
+	}
+}
+
+function deliveredTombs(): Set<string> {
+	const ids = new Set<string>();
+	try {
+		for (const n of readdirSync(DELIVERED_DIR)) ids.add(n);
+	} catch {
+		/* nothing delivered from this build yet */
+	}
+	return ids;
+}
+
 function unclaim(id: string): void {
 	try {
 		unlinkSync(join(CLAIM_DIR, id));
@@ -1114,7 +1149,7 @@ function scanInbox(): {
  * process can make about itself is what it was compiled with. Bump this whenever the
  * file changes; tools/test_ext_version.py fails if you forget.
  */
-export const EXT_VERSION = "8";
+export const EXT_VERSION = "9";
 
 /**
  * Write our fields into a marker file WITHOUT erasing fields we did not write.
@@ -1266,7 +1301,8 @@ export default function (pi: ExtensionAPI) {
 			for (const m of msgs) {
 				attempts.delete(m.id);
 				logSaid("in", m.from_label || m.from_fingerprint || "peer", m.body, m.id);
-				recalled.delete(m.id); // the row exists now; stop reconsidering it
+				markDelivered(m.id); // the durable record; the row is the fallback
+				recalled.delete(m.id); // delivered now; stop reconsidering it
 			}
 			paintChat(ctx);
 		} catch (err) {
@@ -1467,10 +1503,11 @@ export default function (pi: ExtensionAPI) {
 		recalled = new Set();
 		try {
 			const rows = deliveredIds();
+			const tombs = deliveredTombs();
 			const claims = new Set(readdirSync(CLAIM_DIR));
 			const present = new Set(scanInbox().messages.map((m) => m.id));
 			for (const id of onDisk ?? []) {
-				if (!present.has(id) || claims.has(id) || rows.has(id)) continue;
+				if (!present.has(id) || claims.has(id) || tombs.has(id) || rows.has(id)) continue;
 				recalled.add(id);
 			}
 		} catch {
