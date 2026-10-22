@@ -136,6 +136,9 @@ const CLAIM_DIR = join(STATE, "claimed");
 // tombstone is written once, on success, and never removed, so the question "did this
 // arrive" has an answer that does not depend on a structure kept for another purpose.
 const DELIVERED_DIR = join(STATE, "delivered");
+// When counting started. `_` prefixed so it is never mistaken for a letter id, the
+// same convention as live/_writer.json.
+const DELIVERED_EPOCH = join(DELIVERED_DIR, "_epoch");
 // Delivery that failed permanently goes here. A message that cannot be shown
 // must not look delivered: the peer already has a receipt, so silence is the
 // only thing worse than an error.
@@ -921,6 +924,13 @@ function claim(id: string): boolean {
 export function markDelivered(id: string, bodyLen: number): boolean {
 	try {
 		mkdirSync(DELIVERED_DIR, { recursive: true });
+		// The epoch, written once, so a reader can tell "counted once" from "counted
+		// since never". Every letter delivered before this file existed has an
+		// unrecorded count, and an absence that reads as a zero is the error class
+		// this whole night has been about.
+		if (!existsSync(DELIVERED_EPOCH)) {
+			writeFileSync(DELIVERED_EPOCH, `${EXT_VERSION} ${Date.now()}\n`);
+		}
 		// APPEND, never rewrite. One line per render, so the count is derived from the
 		// file instead of stored as a field: a second delivery of the same id is two
 		// lines, where writeFileSync made it indistinguishable from the first. The
@@ -936,10 +946,40 @@ export function markDelivered(id: string, bodyLen: number): boolean {
 	}
 }
 
+/**
+ * How many times this box has rendered a letter, and since when it has been counting.
+ *
+ * `count: null` is not zero: it means no tombstone exists, which for anything delivered
+ * before the epoch is a letter whose deliveries were never recorded. Callers that need
+ * "did it arrive" can use a row; callers that need "how many" must not read null as one.
+ */
+export function deliveryRecord(
+	stateDir: string,
+	id: string,
+): { count: number | null; epoch: number | null } {
+	let epoch: number | null = null;
+	try {
+		const line = readFileSync(join(stateDir, "delivered", "_epoch"), "utf8").trim();
+		const at = Number(line.split(" ")[1]);
+		if (Number.isFinite(at)) epoch = at;
+	} catch {
+		/* counting has not started here */
+	}
+	try {
+		const rows = readFileSync(join(stateDir, "delivered", id), "utf8").split("\n").filter(Boolean);
+		return { count: rows.length, epoch };
+	} catch {
+		return { count: null, epoch };
+	}
+}
+
 export function deliveredTombs(stateDir: string): Set<string> {
 	const ids = new Set<string>();
 	try {
-		for (const n of readdirSync(join(stateDir, "delivered"))) ids.add(n);
+		for (const n of readdirSync(join(stateDir, "delivered"))) {
+			if (n.startsWith("_")) continue; // the epoch is not a letter
+			ids.add(n);
+		}
 	} catch {
 		/* nothing delivered from this build yet */
 	}
@@ -1158,7 +1198,7 @@ function scanInbox(): {
  * process can make about itself is what it was compiled with. Bump this whenever the
  * file changes; tools/test_ext_version.py fails if you forget.
  */
-export const EXT_VERSION = "10";
+export const EXT_VERSION = "11";
 
 /**
  * Write our fields into a marker file WITHOUT erasing fields we did not write.
@@ -1528,13 +1568,22 @@ export default function (pi: ExtensionAPI) {
 		// with their bodies intact on disk. Recall them once, and let the row being
 		// written be what stops it happening twice.
 		recalled = new Set();
+		let unrecoverable = 0;
 		try {
 			const rows = deliveredIds();
 			const tombs = deliveredTombs(STATE);
 			const claims = new Set(readdirSync(CLAIM_DIR));
 			const present = new Set(scanInbox().messages.map((m) => m.id));
 			for (const id of onDisk ?? []) {
-				if (!present.has(id) || claims.has(id) || tombs.has(id) || rows.has(id)) continue;
+				if (claims.has(id) || tombs.has(id) || rows.has(id)) continue;
+				// The body's presence is a precondition of *delivering*, not of noticing.
+				// Folding it into the same `continue` made an archived letter with an
+				// unrecorded delivery a second permanent cell: announced, undelivered,
+				// no body, and silent. So it is counted and said out loud instead.
+				if (!present.has(id)) {
+					unrecoverable++;
+					continue;
+				}
 				recalled.add(id);
 			}
 		} catch {
@@ -1542,6 +1591,10 @@ export default function (pi: ExtensionAPI) {
 		}
 		if (recalled.size > 0) {
 			seedNotice = `${recalled.size} message(s) were announced but never shown; delivering them now`;
+		}
+		if (unrecoverable > 0) {
+			seedNotice += `${seedNotice ? "; " : ""}${unrecoverable} announced message(s) have no body on disk ` +
+				`(archived or removed) and cannot be shown: they are undelivered and unrecoverable here`;
 		}
 
 		// Who we are, before anything writes a claim or a report.

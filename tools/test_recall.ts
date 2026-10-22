@@ -174,6 +174,34 @@ check("a restarted window recalls nothing once the row exists", sent.length === 
 	writeFileSync(`${STATE}/chat.jsonl`, JSON.stringify({ at: Date.now(), dir: "in", id: "dead1", body: "x" }) + "\n");
 }
 
+// 5c. the count knows when it started counting, and an absence is not a zero
+{
+	const rec = mod.deliveryRecord(STATE, "dead1");
+	check("a tombstone reports its count", typeof rec.count === "number" && rec.count >= 1, JSON.stringify(rec));
+	check("and the epoch the counting started at", typeof rec.epoch === "number", JSON.stringify(rec));
+	const never = mod.deliveryRecord(STATE, "never-delivered");
+	check("an uncounted letter reports null, not zero", never.count === null, JSON.stringify(never));
+	check("the epoch is not itself mistaken for a letter", !mod.deliveredTombs(STATE).has("_epoch"));
+}
+
+// 5d. an archived body is reported, not silently skipped
+{
+	// announced, no claim, no tombstone, no row -- and no body: the second permanent
+	// cell. It must not disappear into a `continue`.
+	writeFileSync(`${STATE}/announced.json`, JSON.stringify(["dead1", "archived1"]));
+	rmSync(`${STATE}/delivered/dead1`, { force: true });
+	writeFileSync(`${STATE}/chat.jsonl`, "");
+	notes.length = 0;
+	await handlers.session_start({}, ctx);
+	await settle();
+	check(
+		"a letter announced with no body left is reported, not dropped",
+		notes.some((n) => n.includes("no body on disk") ),
+		JSON.stringify(notes),
+	);
+	check("and it is not delivered from nowhere", !sent.join("\n").includes("archived1"));
+}
+
 // 6. a peer's three dead letters would be recovered: bounded, and only with a body
 {
 	rmSync(H + "/state", { recursive: true, force: true });
