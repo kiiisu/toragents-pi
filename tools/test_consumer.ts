@@ -58,6 +58,27 @@ checks.push(["a non-owner must not steal the file via heartbeat",
 checks.push(["...and the owner is unchanged after a foreign heartbeat",
 	JSON.parse(readFileSync(join(S, "consumer.json"), "utf8")).pid === me.pid]);
 
+// 6b. a lapse must not be permanent.
+//
+// Measured on the desk's box: delivery stopped at 21:56 because consumer.json went
+// stale at 22:14 during a long run, and the heartbeat only ran when the window already
+// counted as the owner -- so the window could never recover itself and three letters sat
+// unclaimed for 49 minutes. The heartbeat must refresh even when stale, because it is
+// the thing that makes staleness false.
+{
+	writeFileSync(join(S, "consumer.json"), JSON.stringify({ pid: me.pid, session: "pi-me", at: now - mod.CONSUMER_STALE_MS - 60_000 }));
+	checks.push(["a lapsed heartbeat reads as not-the-consumer", !mod.isConsumer(S, me.pid, now)]);
+	checks.push(["…and the owner can still refresh it", mod.heartbeatConsumer(S, me.pid, "pi-me", now) === true]);
+	checks.push(["…which makes it the consumer again", mod.isConsumer(S, me.pid, now)]);
+}
+
+// 6c. the source must not gate the heartbeat on ownership, which is what broke it
+{
+	const src = readFileSync(new URL("../toragents_watch.ts", import.meta.url), "utf8");
+	const gated = /if \(owner\)\s*heartbeatConsumer\(/.test(src);
+	checks.push(["the heartbeat is not gated on already owning", !gated]);
+}
+
 // 7. no election file at all: behave like a working channel, do not mute it
 rmSync(join(S, "consumer.json"));
 checks.push(["a missing election file does not mute delivery", mod.isConsumer(S, me.pid, now)]);

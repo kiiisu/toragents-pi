@@ -1227,7 +1227,7 @@ function scanInbox(): {
  * process can make about itself is what it was compiled with. Bump this whenever the
  * file changes; tools/test_ext_version.py fails if you forget.
  */
-export const EXT_VERSION = "12";
+export const EXT_VERSION = "13";
 
 /**
  * Write our fields into a marker file WITHOUT erasing fields we did not write.
@@ -1511,8 +1511,17 @@ export default function (pi: ExtensionAPI) {
 			//
 			// Both windows still agree on one thing: an id is claimed once, so the
 			// same message can never be delivered twice.
+			// The heartbeat must NOT be gated on already being the owner: isConsumer()
+			// requires a heartbeat younger than CONSUMER_STALE_MS, so one lapse -- a slow
+			// turn, a long tool run, a laptop sleep -- made this window stop heartbeating
+			// and therefore never own delivery again, silently, until a takeover or a
+			// restart. Measured on this box: last delivery 21:56, consumer.json stale at
+			// 22:14 during a long test run, three letters unclaimed for 49 minutes.
+			// heartbeatConsumer refuses when another pid owns the file, so refreshing
+			// unconditionally cannot steal anything; it only stops a lapse from being
+			// permanent.
+			heartbeatConsumer(STATE, process.pid, sessionLabel());
 			const owner = CONSUMER && isConsumer(STATE, process.pid);
-			if (owner) heartbeatConsumer(STATE, process.pid, sessionLabel());
 			markLive(STATE, sessionLabel(), process.pid);
 			const { messages } = scanInbox();
 			const wanted = messages.filter((m) =>
