@@ -60,10 +60,17 @@ const other = { pid: process.pid, session: "pi-otherid", name: "stella" };
 }
 
 // 3. a non-receiver stays passive while the desk is live
+//
+// The desk writes its own heartbeat, and since 22 Oct that heartbeat is part of how
+// "live" is established: a probe that cannot signal the desk answers `unknown`, and the
+// owner's own record is what turns unknown into "present". A fixture without one would
+// be describing a desk that left no trace -- which is a different test, and it is case 8.
 {
 	const { d, S } = mk();
 	policy(d, { receiver: "rowan" });
 	mod.electConsumer(S, desk, now);
+	mkdirSync(join(S, "live"), { recursive: true });
+	writeFileSync(join(S, "live", "desk.json"), JSON.stringify({ pid: desk.pid, at: now }));
 	const r = mod.electConsumer(S, other, now + 1000);
 	checks.push(["a non-receiver does NOT take untargeted mail from the desk", !r.tookOver]);
 	checks.push(["...and says why", /designated receiver/.test(r.reason)]);
@@ -140,6 +147,20 @@ const other = { pid: process.pid, session: "pi-otherid", name: "stella" };
 	const r = mod.electConsumer(S, other, now);
 	checks.push(["a corrupt policy file falls back to first-come", r.tookOver]);
 	checks.push(["...and reports nothing loaded", !mod.readPolicy(S).loaded]);
+}
+
+// 8. the same unsignalable desk, but it left no heartbeat -> presumed gone, and a silent
+// channel is the worse failure. This is the cell a boolean default used to decide; now it
+// is decided by evidence, and the absence of evidence is itself a fact.
+{
+	const { d, S } = mk();
+	policy(d, { receiver: "rowan" });
+	mod.electConsumer(S, desk, now);
+	const r = mod.electConsumer(S, other, now + 1000);
+	checks.push(["a desk with no heartbeat is presumed gone, so the channel is not muted",
+		r.tookOver]);
+	checks.push(["...and the takeover names the obstacle it decided against",
+		/not signalable|stale|dead/i.test(r.reason)]);
 }
 
 let bad = 0;

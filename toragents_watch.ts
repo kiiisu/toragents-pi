@@ -344,6 +344,133 @@ export function readPolicy(stateDir: string): {
 const POLICY_CACHE = new Map<string, { mtime: number; value: any }>();
 
 /**
+ * What a signal told us. Three answers, because the world has three.
+ *
+ * `kill(pid, 0)` asks "may I signal this", not "are you running". A pid owned by
+ * another user answers EPERM -- every process you do not own, pid 1 included -- so a
+ * boolean here is a claim the probe cannot support. ESRCH is the only answer that means
+ * gone; everything else means "I was not allowed to look", and a decision taken on that
+ * is a guess wearing a fact's clothes.
+ */
+export type Signal = "alive" | "gone" | "unknown";
+
+export function probePid(
+	pid: number,
+	kill: (p: number, s: number) => void = (p, s) => process.kill(p, s),
+): { signal: Signal; why: string } {
+	if (!Number.isInteger(pid) || pid <= 0) {
+		return { signal: "gone", why: `pid ${String(pid)} is not a pid` };
+	}
+	try {
+		kill(pid, 0);
+		return { signal: "alive", why: "signalled" };
+	} catch (e: any) {
+		const code = String(e?.code || e?.name || "error");
+		if (code === "ESRCH") return { signal: "gone", why: "ESRCH: no such process" };
+		return { signal: "unknown", why: `${code}: could not ask` };
+	}
+}
+
+/**
+ * The second witness, and the reason a cell we called "undecided" never was: every
+ * window writes its own heartbeat into state/live/, so when the signal cannot tell us
+ * anything, the owner's own record can.
+ *
+ * Age, never existence. Those files are never reaped -- 12 of 24 on this box were 33 to
+ * 40 hours old -- so "a file exists" reports a desk that left yesterday. Only the
+ * timestamp is evidence.
+ */
+export function heartbeatWitness(
+	stateDir: string,
+	pid: number,
+	now = Date.now(),
+): { found: boolean; ageMs: number | null; fresh: boolean } {
+	const dir = join(stateDir, "live");
+	let names: string[];
+	try {
+		names = readdirSync(dir);
+	} catch {
+		return { found: false, ageMs: null, fresh: false };
+	}
+	let best = Infinity;
+	for (const n of names) {
+		if (!n.endsWith(".json") || n.startsWith("_")) continue;
+		try {
+			const rec = JSON.parse(readFileSync(join(dir, n), "utf8"));
+			if (Number(rec.pid) !== pid) continue;
+			const age = now - Number(rec.at || 0);
+			if (Number.isFinite(age) && age < best) best = age;
+		} catch {
+			/* a corrupt witness is not a witness */
+		}
+	}
+	if (!Number.isFinite(best)) return { found: false, ageMs: null, fresh: false };
+	return { found: true, ageMs: best, fresh: best < CONSUMER_STALE_MS };
+}
+
+/**
+ * The six cells, named once instead of decided six times by accident.
+ *
+ *   alive   + fresh          -> holds    (a live owner with a current claim)
+ *   alive   + stale          -> handover (a live owner that stopped asking: idle, not gone)
+ *   gone    + either         -> handover (the pid is not there)
+ *   unknown + fresh witness  -> muted    (running, and its consumer write died: the mute we
+ *                                        caused once. escalate; handing over loses its mail)
+ *   unknown + stale/absent   -> handover (no evidence it exists; refusing is the silent desk)
+ */
+export type Ownership = "holds" | "handover" | "muted";
+
+export function decideOwnership(
+	signal: Signal,
+	consumerFresh: boolean,
+	witness: { found: boolean; fresh: boolean },
+): Ownership {
+	if (signal === "alive") return consumerFresh ? "holds" : "handover";
+	if (signal === "gone") return "handover";
+	return witness.fresh ? "muted" : "handover";
+}
+
+/**
+ * Record before notifying, at most once per window per key.
+ *
+ * The notification is a view of this line, not a substitute for it: twelve
+ * `ctx.ui.notify` sites in this file persist nothing, so a nag nobody was looking at
+ * leaves no trace at all. The ghost message tonight was countable only because
+ * `claimed/<id>` existed, and nothing living only in a notification would have been.
+ */
+export const OWNERSHIP_LOG = "ownership.log";
+
+export function recordOwnership(
+	stateDir: string,
+	key: string,
+	what: Record<string, unknown>,
+	now = Date.now(),
+	windowMs = CONSUMER_STALE_MS,
+): boolean {
+	const path = join(stateDir, OWNERSHIP_LOG);
+	try {
+		const prev = readFileSync(path, "utf8").split("\n").filter(Boolean);
+		for (let i = prev.length - 1; i >= 0 && i >= prev.length - 50; i--) {
+			try {
+				const r = JSON.parse(prev[i]);
+				if (r.key === key && now - Number(r.at || 0) < windowMs) return false;
+			} catch {
+				/* skip a torn line */
+			}
+		}
+	} catch {
+		/* no log yet */
+	}
+	try {
+		mkdirSync(stateDir, { recursive: true });
+		appendFileSync(path, JSON.stringify({ at: now, key, ...what }) + "\n");
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+/**
  * May THIS window claim delivery? Pure, exported, and the only place the rule lives.
  *
  * A designated receiver always may. A non-receiver may not while a live designated
@@ -368,7 +495,7 @@ export function electConsumer(
 	stateDir: string,
 	me: { pid: number; session: string; name?: string },
 	now = Date.now(),
-): { owner: string; tookOver: boolean; reason: string } {
+): { owner: string; tookOver: boolean; reason: string; escalate?: "muted" } {
 	const path = join(stateDir, CONSUMER_FILE);
 	let prior: any = null;
 	try {
@@ -376,31 +503,24 @@ export function electConsumer(
 	} catch {
 		/* no election yet */
 	}
-	// "Could not ask" is not "not there". A pid owned by another user answers
-	// EPERM rather than success, and treating that as death is how a front desk
-	// that is very much alive gets declared gone and its mail taken by the next
-	// window to look: on a Linux box running as root, pid 1 is signalable and this
-	// never shows; on any laptop it fires on the first election. Only ESRCH means
-	// the process is gone -- everything else means we are still forbidden to look.
-	const alive = (pid: number) => {
-		try {
-			process.kill(pid, 0);
-			return true;
-		} catch (e: any) {
-			// The comment above says only ESRCH means gone, and the code has to mean
-			// it: EPERM is the case a laptop hits, but EINVAL and everything else we
-			// cannot read are the same kind of error. Naming one of them and letting
-			// the rest fall through to "dead" is the same inference in a smaller hat.
-			return e?.code !== "ESRCH";
-		}
-	};
+	// One probe, one witness, one decision. The probe answers with three states and the
+	// third is not a decision; the witness decides it, because the owner's own heartbeat
+	// is already on disk and was never consulted.
+	const probe = prior ? probePid(Number(prior.pid)) : null;
 	const fresh = prior && now - Number(prior.at || 0) < CONSUMER_STALE_MS;
-	const priorAlive = Boolean(prior && alive(Number(prior.pid)));
+	const witness = prior
+		? heartbeatWitness(stateDir, Number(prior.pid), now)
+		: { found: false, ageMs: null, fresh: false };
+	const decision = probe ? decideOwnership(probe.signal, Boolean(fresh), witness) : "handover";
+	// "Present" now means: the probe saw it, or the witness did. A designation outranks
+	// the race, so this has to be answered before the mute gate -- otherwise a receiver
+	// we simply cannot signal reads as absent and the desk is displaced by policy.
+	const ownerPresent = Boolean(prior) && decision !== "handover";
 	const policy = readPolicy(stateDir);
 	if (
 		!mayClaimOwnership(
 			String(me.name || ""),
-			{ name: String(prior?.name || prior?.session || ""), alive: priorAlive, fresh: Boolean(fresh) },
+			{ name: String(prior?.name || prior?.session || ""), alive: ownerPresent, fresh: Boolean(fresh) },
 			policy,
 		)
 	) {
@@ -410,6 +530,36 @@ export function electConsumer(
 			reason: `designated receiver (${policy.receiver}) holds delivery`,
 		};
 	}
+	if (decision === "muted" && prior) {
+		// Record first: the line is the state, the notification is a view of it.
+		recordOwnership(
+			stateDir,
+			`muted:${prior.pid}`,
+			{ pid: prior.pid, owner: prior.name || prior.session || "", why: probe?.why, heartbeat_age_ms: witness.ageMs },
+			now,
+		);
+		return {
+			owner: String(prior.name || prior.session || prior.pid),
+			tookOver: false,
+			escalate: "muted" as const,
+			reason:
+				`cannot confirm the owner: ${probe?.why}, heartbeat ` +
+				`${Math.round(Number(witness.ageMs || 0) / 1000)}s old -> running, and its ` +
+				`own claim write died. not taking delivery`,
+		};
+	}
+	// A takeover needs a reason that names the obstacle, never a candidate: after a
+	// burned key, a name in a reason is an attribution, and reasons are read by humans
+	// looking for exactly that.
+	const takeoverReason = !prior
+		? ""
+		: probe?.signal === "unknown"
+			? `owner pid ${prior.pid} not signalable (${probe?.why}) and no heartbeat newer ` +
+				`than ${Math.round(CONSUMER_STALE_MS / 1000)}s -> assumed gone`
+			: fresh
+				? "took over from a stale entry"
+				: "took over from a dead session";
+	const priorAlive = ownerPresent;
 	// A live owner normally keeps delivery -- unless I AM the designated receiver and
 	// they are not, in which case the designation outranks the race that got them
 	// there. Without this the receiver-cannot-be-displaced rule would leave the desk
@@ -432,9 +582,7 @@ export function electConsumer(
 		? (policy.receiver ? `designated receiver (${policy.receiver}) claimed delivery` : "first session to claim delivery")
 		: prior.pid === me.pid
 			? "already ours"
-			: fresh
-				? "took over from a stale entry"
-				: "took over from a dead session";
+			: takeoverReason;
 	return { owner: me.session, tookOver: true, reason };
 }
 
@@ -1165,11 +1313,19 @@ export default function (pi: ExtensionAPI) {
 		});
 		CONSUMER = election.tookOver;
 		if (!CONSUMER) {
+			// The election already wrote its line before anything was shown here: the
+			// record is the state, this is a view of it, and a view is allowed to be
+			// missed. A muted owner is a different sentence from a quiet one, because the
+			// remedy is different -- wait for it to wake, do not take its mail.
 			try {
 				ctx.ui.notify(
-					`toragents: message delivery is owned by ${election.owner} ` +
-						`(${election.reason}). This session will not consume mail. ` +
-						`Use /toragents-takeover to take it.`,
+					election.escalate === "muted"
+						? `toragents: delivery ownership is UNRESOLVED (${election.reason}). ` +
+							`This session will not consume mail, and taking it would strand the ` +
+							`owner's letters. Escalated to state/ownership.log.`
+						: `toragents: message delivery is owned by ${election.owner} ` +
+							`(${election.reason}). This session will not consume mail. ` +
+							`Use /toragents-takeover to take it.`,
 					"warning",
 				);
 			} catch {}
