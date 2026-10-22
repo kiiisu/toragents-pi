@@ -387,7 +387,11 @@ export function electConsumer(
 			process.kill(pid, 0);
 			return true;
 		} catch (e: any) {
-			return e?.code === "EPERM";
+			// The comment above says only ESRCH means gone, and the code has to mean
+			// it: EPERM is the case a laptop hits, but EINVAL and everything else we
+			// cannot read are the same kind of error. Naming one of them and letting
+			// the rest fall through to "dead" is the same inference in a smaller hat.
+			return e?.code !== "ESRCH";
 		}
 	};
 	const fresh = prior && now - Number(prior.at || 0) < CONSUMER_STALE_MS;
