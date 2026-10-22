@@ -155,12 +155,29 @@ const other = { pid: process.pid, session: "pi-otherid", name: "stella" };
 {
 	const { d, S } = mk();
 	policy(d, { receiver: "rowan" });
-	mod.electConsumer(S, desk, now);
-	const r = mod.electConsumer(S, other, now + 1000);
-	checks.push(["a desk with no heartbeat is presumed gone, so the channel is not muted",
+	// both clocks stale: the claim is a minute old and there is no heartbeat at all, which is
+	// the only state where nothing on disk speaks for the owner.
+	writeFileSync(join(S, "consumer.json"),
+		JSON.stringify({ pid: desk.pid, session: "pi-deskid", name: "rowan", at: now - 120_000 }));
+	const r = mod.electConsumer(S, other, now);
+	checks.push(["a desk with no heartbeat and a stale claim is presumed gone, so the channel is not muted",
 		r.tookOver]);
 	checks.push(["...and the takeover names the obstacle it decided against",
 		/not signalable|stale|dead/i.test(r.reason)]);
+}
+
+// 9. the desk cannot be signalled, left no heartbeat, but its consumer write is ten seconds old.
+// That is the owner talking: a timestamp it left itself. The first table threw this away and
+// handed over the mail; the correction OR-s the two witnesses instead of voting. No designation
+// here on purpose -- with one, the designation answer (and its reason) is the right one, and the
+// muted path would never be reached.
+{
+	const { S } = mk();
+	writeFileSync(join(S, "consumer.json"),
+		JSON.stringify({ pid: desk.pid, session: "pi-deskid", name: "rowan", at: now - 10_000 }));
+	const r = mod.electConsumer(S, other, now);
+	checks.push(["a fresh consumer write with no heartbeat is NOT a handover", !r.tookOver]);
+	checks.push(["...and it is named as unresolved, not as an owner", r.escalate === "muted"]);
 }
 
 let bad = 0;

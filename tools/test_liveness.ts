@@ -36,7 +36,8 @@ eq("an impossible pid is gone", mod.probePid(999_999_999).signal, "gone");
 eq("EPERM is unknown, not dead", mod.probePid(4242, () => { throw errno("EPERM"); }).signal, "unknown");
 eq("EINVAL is unknown too", mod.probePid(4242, () => { throw errno("EINVAL"); }).signal, "unknown");
 eq("a thrown non-error is still unknown", mod.probePid(4242, () => { throw new Error("boom"); }).signal, "unknown");
-eq("garbage pids never reach the probe", mod.probePid(0, () => { throw new Error("should not run"); }).signal, "gone");
+eq("garbage pids never reach the probe", mod.probePid(0, () => { throw new Error("should not run"); }).signal, "invalid");
+eq("a negative pid is invalid too", mod.probePid(-1).signal, "invalid");
 eq("pid 1 is never reported as gone", mod.probePid(1).signal !== "gone", true);
 checks.push(["the EPERM reason names the errno", /EPERM/.test(mod.probePid(4242, () => { throw errno("EPERM"); }).why)]);
 
@@ -50,7 +51,16 @@ eq("gone + fresh claim hands over", mod.decideOwnership("gone", true, fresh), "h
 eq("gone + stale claim hands over", mod.decideOwnership("gone", false, stale), "handover");
 eq("unknown + fresh heartbeat is MUTED, never a handover", mod.decideOwnership("unknown", true, fresh), "muted");
 eq("unknown + no heartbeat is a handover", mod.decideOwnership("unknown", false, absent), "handover");
-eq("unknown + stale heartbeat is a handover", mod.decideOwnership("unknown", true, stale), "handover");
+// The correction worth keeping in the test file: a consumer write inside the window and a
+// heartbeat are the same class of evidence -- both timestamps from that process -- so they are
+// OR-ed. The first table read one per branch and threw the other away, and this line used to
+// assert the resulting displacement as correct.
+eq("unknown + a fresh consumer write is muted, not handed over", mod.decideOwnership("unknown", true, stale, false), "muted");
+eq("unknown + a fresh heartbeat and a stale consumer write is muted", mod.decideOwnership("unknown", false, fresh, false), "muted");
+eq("unknown + no witness at all is a handover", mod.decideOwnership("unknown", false, absent, false), "handover");
+eq("a corrupt pid is invalid, which is a page and not a handover", mod.decideOwnership("invalid", true, fresh, false), "invalid");
+eq("mid-send is busy, never a handover", mod.decideOwnership("alive", false, stale, true), "busy");
+eq("a dead pid with a live claim is still busy", mod.decideOwnership("gone", true, fresh, true), "busy");
 
 // --- the witness: age, never existence ------------------------------------------
 const now = 1_800_000_000_000;
@@ -67,6 +77,24 @@ eq("the freshest entry wins when a pid wrote twice", mod.heartbeatWitness(STATE,
 eq("an unknown pid has no witness", mod.heartbeatWitness(STATE, 999, now).found, false);
 eq("a corrupt witness does not throw", mod.heartbeatWitness(STATE, 111, now).found, true);
 checks.push(["the witness reports age, not just presence", typeof mod.heartbeatWitness(STATE, 111, now).ageMs === "number"]);
+
+// --- the mid-delivery witness: the daemon's own claim files ----------------------
+const claimsDir = join(STATE, "outbox", ".claims");
+mkdirSync(claimsDir, { recursive: true });
+const claim = (name: string, pid: number, atSec: number) =>
+	writeFileSync(join(claimsDir, name), JSON.stringify({ pid, at: atSec }));
+claim("a.json.claim", 111, Math.floor(now / 1000) - 30);      // in flight, 30 s in
+claim("b.json.claim", 222, Math.floor(now / 1000) - 400);     // held by a flusher that died
+claim("c.json.claim", 333, Math.floor(now / 1000) - 5);
+writeFileSync(join(claimsDir, "d.json.claim"), "not json");
+eq("a fresh claim means that owner is mid-send", mod.outboxInFlight(STATE, 111, now).found, true);
+eq("a claim past the stale window is not evidence", mod.outboxInFlight(STATE, 222, now).found, false);
+eq("the freshest claim is the one reported", Math.round(Number(mod.outboxInFlight(STATE, 333, now).ageMs) / 1000), 5);
+eq("an owner with no claim is not mid-send", mod.outboxInFlight(STATE, 999, now).found, false);
+eq("a corrupt claim does not throw", mod.outboxInFlight(STATE, 111, now).found, true);
+// seconds, not milliseconds: the daemon writes time.time(), and reading it as ms would put
+// every claim 55 years in the past and quietly disable the witness.
+checks.push(["the claim timestamp is read as seconds", Number(mod.outboxInFlight(STATE, 111, now).ageMs) < 3_600_000]);
 
 // --- the record: once per window, and it survives --------------------------------
 const log = join(STATE, mod.OWNERSHIP_LOG);
@@ -106,6 +134,14 @@ mkdirSync(join(S3, "live"), { recursive: true });
 writeFileSync(join(S3, "consumer.json"), JSON.stringify({ pid: 1, session: "pi-desk", name: "desk", at: now - 200_000 }));
 const taken = mod.electConsumer(S3, { pid: process.pid, session: "pi-me", name: "me" }, now);
 eq("no witness: the channel is not left muted", taken.tookOver, true);
+
+// a corrupt consumer file is a page, not a handover
+const S4 = join(HOME, "state4");
+mkdirSync(join(S4, "live"), { recursive: true });
+writeFileSync(join(S4, "consumer.json"), JSON.stringify({ pid: "not-a-pid", session: "pi-desk", at: now }));
+const corrupt = mod.electConsumer(S4, { pid: process.pid, session: "pi-me", name: "me" }, now);
+eq("a corrupt consumer file does not hand delivery away", corrupt.tookOver, false);
+eq("...it escalates instead", corrupt.escalate, "invalid");
 
 const bad = checks.filter(([, ok]) => !ok);
 for (const [n, ok, why] of checks) console.log(`  ${n.padEnd(58)} ${ok ? "PASS" : "FAIL"}`) && (ok || console.log(`      ${why}`));

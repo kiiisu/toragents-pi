@@ -352,14 +352,18 @@ const POLICY_CACHE = new Map<string, { mtime: number; value: any }>();
  * gone; everything else means "I was not allowed to look", and a decision taken on that
  * is a guess wearing a fact's clothes.
  */
-export type Signal = "alive" | "gone" | "unknown";
+export type Signal = "alive" | "gone" | "unknown" | "invalid";
 
 export function probePid(
 	pid: number,
 	kill: (p: number, s: number) => void = (p, s) => process.kill(p, s),
 ): { signal: Signal; why: string } {
 	if (!Number.isInteger(pid) || pid <= 0) {
-		return { signal: "gone", why: `pid ${String(pid)} is not a pid` };
+		// The guard stays -- kill(0, 0) signals a process group and kill(-1, 0) signals
+		// everything -- but the label was doing a decision's work. A corrupt consumer.json
+		// is not a dead owner: the night this desk muted itself it did so by hand-writing
+		// that exact file. "gone" licenses a handover; this licenses a page.
+		return { signal: "invalid", why: `consumer file names ${JSON.stringify(pid)}, which is not a pid` };
 	}
 	try {
 		kill(pid, 0);
@@ -409,6 +413,50 @@ export function heartbeatWitness(
 }
 
 /**
+ * The mid-delivery witness, which was on disk all along.
+ *
+ * A send can outlast the staleness clock: the desk's own record shows a 125.8 s send
+ * against a 90 s threshold, so a session inside a slow dial is signalable and stale at the
+ * same time -- the alive+stale row, which used to hand over. Handing over there is a double
+ * delivery waiting for a slow wire. The durable-send claim (`state/outbox/.claims/<id>.claim`,
+ * O_EXCL, `{pid, at}` in seconds, stale at 300 s) is written by the flusher that is actually
+ * holding the item, so it answers "is this owner mid-send" without guessing.
+ *
+ * Absent today: the claim only exists once #2 lands. A missing directory means "no evidence",
+ * which is different from "no send", and it is read that way.
+ */
+export const OUTBOX_CLAIM_STALE_MS = 300_000;
+
+export function outboxInFlight(
+	stateDir: string,
+	pid: number,
+	now = Date.now(),
+): { found: boolean; ageMs: number | null } {
+	const dir = join(stateDir, "outbox", ".claims");
+	let names: string[];
+	try {
+		names = readdirSync(dir);
+	} catch {
+		return { found: false, ageMs: null };
+	}
+	let best = Infinity;
+	for (const n of names) {
+		if (!n.endsWith(".claim")) continue;
+		try {
+			const rec = JSON.parse(readFileSync(join(dir, n), "utf8"));
+			if (Number(rec.pid) !== pid) continue;
+			// the daemon writes `at` in seconds (time.time()), the panel thinks in ms
+			const age = now - Number(rec.at || 0) * 1000;
+			if (Number.isFinite(age) && age >= 0 && age < best) best = age;
+		} catch {
+			/* an unreadable claim is not a claim */
+		}
+	}
+	if (!Number.isFinite(best) || best >= OUTBOX_CLAIM_STALE_MS) return { found: false, ageMs: null };
+	return { found: true, ageMs: best };
+}
+
+/**
  * The six cells, named once instead of decided six times by accident.
  *
  *   alive   + fresh          -> holds    (a live owner with a current claim)
@@ -418,16 +466,23 @@ export function heartbeatWitness(
  *                                        caused once. escalate; handing over loses its mail)
  *   unknown + stale/absent   -> handover (no evidence it exists; refusing is the silent desk)
  */
-export type Ownership = "holds" | "handover" | "muted";
+export type Ownership = "holds" | "handover" | "muted" | "busy" | "invalid";
 
 export function decideOwnership(
 	signal: Signal,
 	consumerFresh: boolean,
 	witness: { found: boolean; fresh: boolean },
+	inflight = false,
 ): Ownership {
+	if (signal === "invalid") return "invalid";
+	// A fresh claim by the owner and a fresh heartbeat are the same evidentiary class -- both
+	// are timestamps left by that process -- so they are OR-ed, never voted. The first version
+	// of this table read only one of them per branch and threw the other away, which handed
+	// over a mailbox the owner had written to twenty seconds earlier.
+	if (inflight) return "busy";                       // mid-send: a handover here duplicates
 	if (signal === "alive") return consumerFresh ? "holds" : "handover";
 	if (signal === "gone") return "handover";
-	return witness.fresh ? "muted" : "handover";
+	return consumerFresh || witness.fresh ? "muted" : "handover";
 }
 
 /**
@@ -495,7 +550,12 @@ export function electConsumer(
 	stateDir: string,
 	me: { pid: number; session: string; name?: string },
 	now = Date.now(),
-): { owner: string; tookOver: boolean; reason: string; escalate?: "muted" } {
+): {
+	owner: string;
+	tookOver: boolean;
+	reason: string;
+	escalate?: "muted" | "busy" | "invalid";
+} {
 	const path = join(stateDir, CONSUMER_FILE);
 	let prior: any = null;
 	try {
@@ -511,7 +571,10 @@ export function electConsumer(
 	const witness = prior
 		? heartbeatWitness(stateDir, Number(prior.pid), now)
 		: { found: false, ageMs: null, fresh: false };
-	const decision = probe ? decideOwnership(probe.signal, Boolean(fresh), witness) : "handover";
+	const inflight = prior ? outboxInFlight(stateDir, Number(prior.pid), now) : { found: false, ageMs: null };
+	const decision = probe
+		? decideOwnership(probe.signal, Boolean(fresh), witness, inflight.found)
+		: "handover";
 	// "Present" now means: the probe saw it, or the witness did. A designation outranks
 	// the race, so this has to be answered before the mute gate -- otherwise a receiver
 	// we simply cannot signal reads as absent and the desk is displaced by policy.
@@ -530,7 +593,44 @@ export function electConsumer(
 			reason: `designated receiver (${policy.receiver}) holds delivery`,
 		};
 	}
-	if (decision === "muted" && prior) {
+	// A designation outranks the race, and it also outranks a mute: the receiver may take
+	// delivery from an owner nobody can confirm, because that is what being designated means.
+	// Without this, a window whose NAME is the receiver was refused by the escalation gates
+	// placed above it -- the naming trap, reintroduced by ordering.
+	const iAmReceiver = Boolean(policy.receiver && me.name === policy.receiver);
+	const priorIsReceiver = Boolean(policy.receiver && prior?.name === policy.receiver);
+	const mayOutrank = iAmReceiver && !priorIsReceiver;
+
+	if (decision === "invalid" && prior && !mayOutrank) {
+		// Not a handover: a file that names an impossible pid is a corrupt file, and the last
+		// time this desk lost delivery it was by hand-writing exactly that file.
+		recordOwnership(stateDir, `invalid:${prior.pid}`, { pid: prior.pid, why: probe?.why }, now);
+		return {
+			owner: String(prior.name || prior.session || ""),
+			tookOver: false,
+			escalate: "invalid" as const,
+			reason: `consumer.json is not a claim anyone made: ${probe?.why}. fix the file, do not take the mail`,
+		};
+	}
+	if (decision === "busy" && prior && !mayOutrank) {
+		recordOwnership(
+			stateDir,
+			`busy:${prior.pid}`,
+			{ pid: prior.pid, why: "mid-send", claim_age_ms: inflight.ageMs },
+			now,
+		);
+		return {
+			owner: String(prior.name || prior.session || prior.pid),
+			tookOver: false,
+			escalate: "busy" as const,
+			reason:
+				`owner pid ${prior.pid} is mid-send (claim ` +
+				`${Math.round(Number(inflight.ageMs || 0) / 1000)}s old, stale at ` +
+				`${Math.round(OUTBOX_CLAIM_STALE_MS / 1000)}s): taking delivery here would ` +
+				`duplicate the send`,
+		};
+	}
+	if (decision === "muted" && prior && !mayOutrank) {
 		// Record first: the line is the state, the notification is a view of it.
 		recordOwnership(
 			stateDir,
@@ -564,9 +664,7 @@ export function electConsumer(
 	// they are not, in which case the designation outranks the race that got them
 	// there. Without this the receiver-cannot-be-displaced rule would leave the desk
 	// permanently locked out by whoever happened to start first.
-	const iAmReceiver = Boolean(policy.receiver && me.name === policy.receiver);
-	const priorIsReceiver = Boolean(policy.receiver && prior?.name === policy.receiver);
-	if (prior && prior.pid !== me.pid && priorAlive && fresh && !(iAmReceiver && !priorIsReceiver)) {
+	if (prior && prior.pid !== me.pid && priorAlive && fresh && !mayOutrank) {
 		return { owner: String(prior.session || prior.pid), tookOver: false, reason: "another live session owns delivery" };
 	}
 	try {
@@ -1319,7 +1417,7 @@ export default function (pi: ExtensionAPI) {
 			// remedy is different -- wait for it to wake, do not take its mail.
 			try {
 				ctx.ui.notify(
-					election.escalate === "muted"
+					election.escalate
 						? `toragents: delivery ownership is UNRESOLVED (${election.reason}). ` +
 							`This session will not consume mail, and taking it would strand the ` +
 							`owner's letters. Escalated to state/ownership.log.`
