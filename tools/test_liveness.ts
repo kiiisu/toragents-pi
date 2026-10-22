@@ -79,22 +79,42 @@ eq("a corrupt witness does not throw", mod.heartbeatWitness(STATE, 111, now).fou
 checks.push(["the witness reports age, not just presence", typeof mod.heartbeatWitness(STATE, 111, now).ageMs === "number"]);
 
 // --- the mid-delivery witness: the daemon's own claim files ----------------------
+// The claim is written by the flusher, a child of the window, so its pid is never the
+// window's pid (measured on the peer's box: claim 3085809, consumer 857931, 0 matches).
+// These fixtures keep the two pids deliberately different for that reason.
 const claimsDir = join(STATE, "outbox", ".claims");
 mkdirSync(claimsDir, { recursive: true });
-const claim = (name: string, pid: number, atSec: number) =>
-	writeFileSync(join(claimsDir, name), JSON.stringify({ pid, at: atSec }));
+const claim = (name: string, pid: number, atSec: number, session?: string) =>
+	writeFileSync(
+		join(claimsDir, name),
+		JSON.stringify(session ? { pid, at: atSec, session } : { pid, at: atSec }),
+	);
 claim("a.json.claim", 111, Math.floor(now / 1000) - 30);      // in flight, 30 s in
 claim("b.json.claim", 222, Math.floor(now / 1000) - 400);     // held by a flusher that died
 claim("c.json.claim", 333, Math.floor(now / 1000) - 5);
 writeFileSync(join(claimsDir, "d.json.claim"), "not json");
-eq("a fresh claim means that owner is mid-send", mod.outboxInFlight(STATE, 111, now).found, true);
-eq("a claim past the stale window is not evidence", mod.outboxInFlight(STATE, 222, now).found, false);
-eq("the freshest claim is the one reported", Math.round(Number(mod.outboxInFlight(STATE, 333, now).ageMs) / 1000), 5);
-eq("an owner with no claim is not mid-send", mod.outboxInFlight(STATE, 999, now).found, false);
+const OWNER_PID = 857931;          // the window
+const OWNER_SESSION = "pi-01a15403";
+eq("a fresh claim is mid-send even when its pid is not the owner's", mod.outboxInFlight(STATE, OWNER_PID, now, OWNER_SESSION).found, true);
+eq("...and it reports that it could not name the owner", mod.outboxInFlight(STATE, OWNER_PID, now, OWNER_SESSION).named, false);
+// isolation matters now that the pid is no longer the key: a stale claim next to a fresh one
+// proves nothing, so this one gets a state dir of its own.
+const STALE_ONLY = join(STATE, "..", "staleonly");
+mkdirSync(join(STALE_ONLY, "outbox", ".claims"), { recursive: true });
+writeFileSync(join(STALE_ONLY, "outbox", ".claims", "b.json.claim"), JSON.stringify({ pid: 222, at: Math.floor(now / 1000) - 400 }));
+eq("a claim past the stale window is not evidence", mod.outboxInFlight(STALE_ONLY, 222, now).found, false);
+eq("the freshest claim is the one reported", Math.round(Number(mod.outboxInFlight(STATE, 999, now).ageMs) / 1000), 5);
 eq("a corrupt claim does not throw", mod.outboxInFlight(STATE, 111, now).found, true);
+// a claim that names the owner is preferred over one that does not: nearest evidence wins.
+claim("e.json.claim", 444, Math.floor(now / 1000) - 60, OWNER_SESSION);
+eq("a claim naming the owner is preferred", Math.round(Number(mod.outboxInFlight(STATE, OWNER_PID, now, OWNER_SESSION).ageMs) / 1000), 60);
+eq("...and says so", mod.outboxInFlight(STATE, OWNER_PID, now, OWNER_SESSION).named, true);
+eq("an empty outbox is not mid-send", mod.outboxInFlight(join(STATE, "nowhere"), OWNER_PID, now, OWNER_SESSION).found, false);
 // seconds, not milliseconds: the daemon writes time.time(), and reading it as ms would put
 // every claim 55 years in the past and quietly disable the witness.
 checks.push(["the claim timestamp is read as seconds", Number(mod.outboxInFlight(STATE, 111, now).ageMs) < 3_600_000]);
+// the whole point: a busy outbox outranks every signal, including a dead-looking one.
+eq("a dead-looking owner with a send in flight does not hand over", mod.decideOwnership("gone", true, fresh, mod.outboxInFlight(STATE, OWNER_PID, now, OWNER_SESSION).found), "busy");
 
 // --- the record: once per window, and it survives --------------------------------
 const log = join(STATE, mod.OWNERSHIP_LOG);

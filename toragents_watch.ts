@@ -429,35 +429,49 @@ export const OUTBOX_CLAIM_STALE_MS = 300_000;
 
 export function outboxInFlight(
 	stateDir: string,
-	pid: number,
+	pid: number | null,
 	now = Date.now(),
-): { found: boolean; ageMs: number | null } {
+	session: string | null = null,
+): { found: boolean; ageMs: number | null; named: boolean } {
 	const dir = join(stateDir, "outbox", ".claims");
 	let names: string[];
 	try {
 		names = readdirSync(dir);
 	} catch {
-		return { found: false, ageMs: null };
+		return { found: false, ageMs: null, named: false };
 	}
 	let best = Infinity;
+	let bestNamed = Infinity;
 	for (const n of names) {
 		if (!n.endsWith(".claim")) continue;
 		try {
 			const rec = JSON.parse(readFileSync(join(dir, n), "utf8"));
-			if (Number(rec.pid) !== pid) continue;
 			// the daemon writes `at` in seconds (time.time()), the panel thinks in ms
 			const age = now - Number(rec.at || 0) * 1000;
-			if (Number.isFinite(age) && age >= 0 && age < best) best = age;
+			if (!Number.isFinite(age) || age < 0 || age >= OUTBOX_CLAIM_STALE_MS) continue;
+			if (age < best) best = age;
+			const namesOwner =
+				(pid !== null && Number(rec.pid) === pid) ||
+				(session !== null && typeof rec.session === "string" && rec.session === session);
+			if (namesOwner && age < bestNamed) bestNamed = age;
 		} catch {
 			/* an unreadable claim is not a claim */
 		}
 	}
-	if (!Number.isFinite(best) || best >= OUTBOX_CLAIM_STALE_MS) return { found: false, ageMs: null };
-	return { found: true, ageMs: best };
+	if (!Number.isFinite(best)) return { found: false, ageMs: null, named: false };
+	const named = Number.isFinite(bestNamed);
+	return { found: true, ageMs: named ? bestNamed : best, named };
 }
 
 /**
  * The six cells, named once instead of decided six times by accident.
+ *
+ * The mid-send witness started as a join: claim.pid === consumer.pid. That join can never
+ * match in production -- `outbox.py` writes `os.getpid()` of the *flusher*, a child of the
+ * window that has exited by the time the next tick reads the file (measured on the peer's
+ * box: claim 3085809 against consumer 857931, zero matches). So the claim answers "is this
+ * outbox in use right now", and the safe error is to decline a handover on the strength of
+ * a send we cannot attribute, not to hand one over because we could not name it.
  *
  *   alive   + fresh          -> holds    (a live owner with a current claim)
  *   alive   + stale          -> handover (a live owner that stopped asking: idle, not gone)
@@ -571,7 +585,14 @@ export function electConsumer(
 	const witness = prior
 		? heartbeatWitness(stateDir, Number(prior.pid), now)
 		: { found: false, ageMs: null, fresh: false };
-	const inflight = prior ? outboxInFlight(stateDir, Number(prior.pid), now) : { found: false, ageMs: null };
+	// The claim names the flusher, not this window, so it is asked "is anything in flight"
+	// rather than "is the owner in flight" -- and an unattributable send still refuses a handover.
+	const inflight = outboxInFlight(
+		stateDir,
+		prior ? Number(prior.pid) : null,
+		now,
+		prior?.session ?? null,
+	);
 	const decision = probe
 		? decideOwnership(probe.signal, Boolean(fresh), witness, inflight.found)
 		: "handover";
@@ -1065,7 +1086,7 @@ function scanInbox(): {
  * process can make about itself is what it was compiled with. Bump this whenever the
  * file changes; tools/test_ext_version.py fails if you forget.
  */
-export const EXT_VERSION = "6";
+export const EXT_VERSION = "7";
 
 /**
  * Write our fields into a marker file WITHOUT erasing fields we did not write.
