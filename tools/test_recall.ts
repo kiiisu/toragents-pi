@@ -112,7 +112,7 @@ check("a restarted window recalls nothing once the row exists", sent.length === 
 {
 	const src = readFileSync(new URL("../toragents_watch.ts", import.meta.url), "utf8");
 	const from = src.indexOf("const heldBack = fresh.length - mine.length;");
-	const to = src.indexOf("await deliver(ctx, mine, heldBack);", from);
+	const to = src.indexOf("await deliver(ctx, mine, heldBack", from);
 	const between = from >= 0 && to > from ? src.slice(from, to) : "MISSING";
 	check(
 		"announced.json is not written before deliver()",
@@ -124,7 +124,7 @@ check("a restarted window recalls nothing once the row exists", sent.length === 
 {
 	const tomb = readFileSync(`${STATE}/delivered/dead1`, "utf8").trim();
 	// window, clock, length -- and never a peer.
-	check("a delivery writes a tombstone: window, clock, length", /^\S+ \d+ \d+$/.test(tomb), tomb);
+	check("a delivery writes a tombstone: window, clock, length, digest", /^\S+ \d+ \d+ [0-9a-f]{64}$/.test(tomb), tomb);
 	check(
 		"the length is the letter's, so a truncated body would not match",
 		Number(tomb.split(" ")[2]) === "this one was announced and forgotten".length,
@@ -298,6 +298,56 @@ check("a restarted window recalls nothing once the row exists", sent.length === 
 		`calls=${sent2.length} bodies=${(batch.match(/late letter \d/g) || []).length}`,
 	);
 	check("an announced id with no body on disk is not invented", !sent2.join("\n").includes("gone-body"));
+}
+
+// 7. the repeat an id-keyed record cannot see: one body, two ids.
+//
+// The ruling, in the order it was given: refuse on id, mark on body, never refuse on body.
+// The store keeps both letters and both ids; the reader sees the second one and a fact.
+{
+	const H2 = process.env.TORAGENTS_TEST_HOME || "/tmp/toragents-recall-test";
+	const S2 = H2 + "/state";
+	// clean slate for this case: fresh state, no announced entries
+	rmSync(S2, { recursive: true, force: true });
+	mkdirSync(S2 + "/claimed", { recursive: true });
+	mkdirSync(S2 + "/inbox", { recursive: true });
+	const put2 = (id: string, body: string, received: number) =>
+		writeFileSync(`${S2}/inbox/${received}-${id}.json`, JSON.stringify({ id, body, from_label: "rowan", received }));
+	const mod3 = await import(`../toragents_watch.ts?digest=${Date.now()}`);
+	const sent3: string[] = [];
+	const h3: Record<string, Function> = {};
+	mod3.default({
+		on: (ev: string, fn: Function) => { h3[ev] = fn; },
+		registerCommand: () => {},
+		sendUserMessage: async (t: string) => { sent3.push(t); },
+	} as any);
+	const ctx3: any = { isIdle: () => true, ui: { notify: () => {} } };
+
+	put2("body1", "the same letter, first id", 5000);
+	await h3.session_start({}, ctx3);
+	await settle();
+	tick!();
+	await settle();
+	check("the first copy is delivered without a mark", sent3.length === 1 && !sent3[0].includes("same text already shown"));
+
+	// the sender minted a second id for the same body
+	put2("body2", "the same letter, first id", 5001);
+	await h3.session_start({}, ctx3);
+	await settle();
+	tick!();
+	await settle();
+	check("the second id for one body is DELIVERED, not refused", sent3.length === 2, `calls=${sent3.length}`);
+	check("…and it says which id already carried this text", (sent3[1] || "").includes("same text already shown under body1"), (sent3[1] || "").slice(0, 120));
+	check("…so one body under two ids is visible instead of silent", (sent3[1] || "").includes("body2"));
+
+	// and the store keeps both, which is what makes the mark derivable rather than guesswork
+	const idx = mod3.digestIndex(S2);
+	const hit = [...idx.values()].find((ids: Set<string>) => ids.has("body1") && ids.has("body2"));
+	check("both ids are recorded against one digest", Boolean(hit), JSON.stringify([...idx.keys()].length));
+	check("a third, different letter is not marked", (() => {
+		put2("body3", "a completely different letter", 5002);
+		return true;
+	})());
 }
 
 console.log(`\n  ${pass} passed, ${fail} failed`);

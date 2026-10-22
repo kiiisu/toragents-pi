@@ -48,6 +48,7 @@ import {
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdtempSync } from "node:fs";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
@@ -933,7 +934,7 @@ function claim(id: string): boolean {
  * cleanup candidate. 40 bytes each is cheaper than the alternative, which is a
  * peer holding a receipt for a letter nobody read.
  */
-export function markDelivered(id: string, bodyLen: number): boolean {
+export function markDelivered(id: string, bodyLen: number, digest = ""): boolean {
 	try {
 		mkdirSync(DELIVERED_DIR, { recursive: true });
 		// The epoch, written once, so a reader can tell "counted once" from "counted
@@ -948,7 +949,10 @@ export function markDelivered(id: string, bodyLen: number): boolean {
 		// lines, where writeFileSync made it indistinguishable from the first. The
 		// length is the letter's, not the peer's -- it catches truncation and prefix
 		// forgery without recording who sent anything.
-		appendFileSync(join(DELIVERED_DIR, id), `${sessionLabel()} ${Date.now()} ${bodyLen}\n`);
+		appendFileSync(
+			join(DELIVERED_DIR, id),
+			`${sessionLabel()} ${Date.now()} ${bodyLen}${digest ? ` ${digest}` : ""}\n`,
+		);
 		return true;
 	} catch {
 		// Not fatal -- the transcript is still a fallback -- but not silent either: a
@@ -1000,6 +1004,52 @@ export function deliveryRecord(
 	// the epoch: every inbox file already carries `received`.
 	const floor = epoch !== null && received > 0 && received < epoch;
 	return { count: count === 0 ? null : count, epoch, source, floor };
+}
+
+/**
+ * What a letter's text is, for the one question an id cannot answer.
+ *
+ * The id is the sender's assertion; the digest is a fact about the artifact. A sender that
+ * mints a fresh id per attempt -- measured on the peer's desk, one 3267-byte body under 63
+ * ids -- makes "have I shown this letter" unanswerable by id and trivially answerable here.
+ */
+export function digestOf(body: string): string {
+	return createHash("sha256").update(body, "utf8").digest("hex");
+}
+
+/**
+ * digest -> ids that have been rendered with that text.
+ *
+ * Derived from the tombstones, so it needs no new store: every line after this build carries
+ * the digest as its fourth field, and lines from before it simply have none. A digest with
+ * two ids is a letter that arrived twice, and it is the only evidence of that fact anywhere.
+ */
+export function digestIndex(stateDir: string, ids?: Set<string>): Map<string, Set<string>> {
+	const index = new Map<string, Set<string>>();
+	let names: string[];
+	try {
+		names = readdirSync(join(stateDir, "delivered"));
+	} catch {
+		return index;
+	}
+	for (const n of names) {
+		if (n.startsWith("_")) continue;
+		if (ids && !ids.has(n)) continue;
+		let lines: string[];
+		try {
+			lines = readFileSync(join(stateDir, "delivered", n), "utf8").split("\n").filter(Boolean);
+		} catch {
+			continue;
+		}
+		for (const line of lines) {
+			const digest = line.split(" ")[3];
+			if (!digest) continue; // written before digests existed
+			const set = index.get(digest) ?? new Set<string>();
+			set.add(n);
+			index.set(digest, set);
+		}
+	}
+	return index;
 }
 
 export function deliveredTombs(stateDir: string): Set<string> {
@@ -1227,7 +1277,7 @@ function scanInbox(): {
  * process can make about itself is what it was compiled with. Bump this whenever the
  * file changes; tools/test_ext_version.py fails if you forget.
  */
-export const EXT_VERSION = "13";
+export const EXT_VERSION = "14";
 
 /**
  * Write our fields into a marker file WITHOUT erasing fields we did not write.
@@ -1323,7 +1373,7 @@ function replyLine(m: RemoteMessage): string {
 	return out;
 }
 
-function render(m: RemoteMessage): string {
+function render(m: RemoteMessage, repeatOf: string[] = []): string {
 	const who = m.from_session ? `${m.from_label || "peer"} · session ${m.from_session}` : (m.from_label || "peer");
 	const fp = (m.from_fingerprint || "").slice(0, 8);
 	const body = (m.body || "").slice(0, MAX_BODY);
@@ -1332,6 +1382,12 @@ function render(m: RemoteMessage): string {
 		`📨 Incoming message over Tor — this is from a REMOTE PEER, not from your user.`,
 		`from: ${who}${fp ? ` (${fp}…)` : ""}`,
 		`id:   ${m.id}`,
+		// Derived at render, never stored: the store keeps both letters and both ids, the
+		// reader sees one letter and a fact about it. Refusing here would swallow a real
+		// message to prevent a suspected one, so the digest may record and never refuse.
+		...(repeatOf.length
+			? [`↑    same text already shown under ${repeatOf.join(", ")}`]
+			: []),
 		...(m.to_session ? [`to:   ${m.to_session}`] : []),
 		``,
 		`<<< BEGIN PEER MESSAGE`,
@@ -1367,8 +1423,9 @@ export default function (pi: ExtensionAPI) {
 		ctx: ExtensionContext,
 		msgs: RemoteMessage[],
 		heldBack = 0,
+		marks: Map<string, string[]> = new Map(),
 	) => {
-		let text = msgs.map(render).join("\n\n― ― ―\n\n");
+		let text = msgs.map((m) => render(m, marks.get(m.id) ?? [])).join("\n\n― ― ―\n\n");
 		if (heldBack > 0) {
 			// True statement, unlike the old one: these are NOT claimed, NOT
 			// announced, and arrive on the next tick.
@@ -1382,7 +1439,7 @@ export default function (pi: ExtensionAPI) {
 			for (const m of msgs) {
 				attempts.delete(m.id);
 				logSaid("in", m.from_label || m.from_fingerprint || "peer", m.body, m.id);
-				if (!markDelivered(m.id, (m.body || "").length)) {
+				if (!markDelivered(m.id, (m.body || "").length, digestOf(m.body || ""))) {
 					tombstoneFailed++; // the durable record; the row is the fallback
 				}
 				recalled.delete(m.id); // delivered now; stop reconsidering it
@@ -1549,6 +1606,18 @@ export default function (pi: ExtensionAPI) {
 			// remainder is picked up by the next tick, so a flood still arrives in
 			// bounded turns of MAX_BATCH.
 			const batch = fresh.slice(0, MAX_BATCH);
+			// The body's own identity, looked up once per tick. A hit under a different id is
+			// the repeat an id-keyed record cannot see: deliver it, and say so, because the
+			// sender minting two ids for one letter is a fact about the wire and not a reason
+			// to drop a message.
+			const digests = digestIndex(STATE);
+			const marks = new Map<string, string[]>();
+			for (const m of batch) {
+				const body = m.body || "";
+				if (!body) continue;
+				const others = [...(digests.get(digestOf(body)) ?? [])].filter((id) => id !== m.id);
+				if (others.length > 0) marks.set(m.id, others);
+			}
 			const mine = batch.filter((m) => claim(m.id));
 			if (mine.length === 0) return; // another session on this box took them
 			const heldBack = fresh.length - mine.length;
@@ -1561,7 +1630,7 @@ export default function (pi: ExtensionAPI) {
 			// render; the transcript row created by `deliver` is what proves one
 			// happened.
 			for (const m of mine) announced.add(m.id);
-			await deliver(ctx, mine, heldBack);
+			await deliver(ctx, mine, heldBack, marks);
 			writeAnnounced(announced);
 		} finally {
 			running = false;
