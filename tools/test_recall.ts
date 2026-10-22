@@ -123,8 +123,31 @@ check("a restarted window recalls nothing once the row exists", sent.length === 
 // 5b. the tombstone: a delivery record that outlives the transcript
 {
 	const tomb = readFileSync(`${STATE}/delivered/dead1`, "utf8").trim();
-	check("a delivery writes a tombstone naming the window", /^\S+ \d+$/.test(tomb), tomb);
-	check("a tombstone exists for the recalled letter", tomb.length > 0);
+	// window, clock, length -- and never a peer.
+	check("a delivery writes a tombstone: window, clock, length", /^\S+ \d+ \d+$/.test(tomb), tomb);
+	check(
+		"the length is the letter's, so a truncated body would not match",
+		Number(tomb.split(" ")[2]) === "this one was announced and forgotten".length,
+		tomb,
+	);
+	check("and it records nothing about who sent it", !/rowan|liam|@|onion/.test(tomb));
+	// APPEND, not rewrite: a second render of the same id is two lines, which is the
+	// count. writeFileSync made the second delivery indistinguishable from the first.
+	check("a second delivery appends rather than overwrites", mod.markDelivered("dead1", 36) === true && readFileSync(`${STATE}/delivered/dead1`, "utf8").trim().split("\n").length === 2);
+	// And the failure direction, so the boolean is not a constant: a path that cannot be
+	// written returns false rather than an exception and rather than true.
+	check(
+		"an unwritable tombstone returns false instead of throwing",
+		mod.markDelivered("nested/dir", 1) === false,
+	);
+	// The one thing the comment promises is the thing a tidy-up does first.
+	{
+		const src = readFileSync(new URL("../toragents_watch.ts", import.meta.url), "utf8");
+		const destructive = src
+			.split("\n")
+			.filter((l) => /unlinkSync|rmSync|rmdirSync|truncate/.test(l) && /DELIVERED_DIR|"delivered"/.test(l));
+		check("nothing deletes from delivered/", destructive.length === 0, destructive.join(" | "));
+	}
 	// The transcript is a convenience; this is the test of whether the recall
 	// depends on it. Blank the rows and restart: the tombstone must still hold.
 	writeFileSync(`${STATE}/chat.jsonl`, "");

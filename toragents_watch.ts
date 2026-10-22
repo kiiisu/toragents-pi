@@ -918,19 +918,28 @@ function claim(id: string): boolean {
  * cleanup candidate. 40 bytes each is cheaper than the alternative, which is a
  * peer holding a receipt for a letter nobody read.
  */
-function markDelivered(id: string): void {
+export function markDelivered(id: string, bodyLen: number): boolean {
 	try {
 		mkdirSync(DELIVERED_DIR, { recursive: true });
-		writeFileSync(join(DELIVERED_DIR, id), `${sessionLabel()} ${Date.now()}\n`);
+		// APPEND, never rewrite. One line per render, so the count is derived from the
+		// file instead of stored as a field: a second delivery of the same id is two
+		// lines, where writeFileSync made it indistinguishable from the first. The
+		// length is the letter's, not the peer's -- it catches truncation and prefix
+		// forgery without recording who sent anything.
+		appendFileSync(join(DELIVERED_DIR, id), `${sessionLabel()} ${Date.now()} ${bodyLen}\n`);
+		return true;
 	} catch {
-		/* the recall falls back to the transcript; never fail a delivery over this */
+		// Not fatal -- the transcript is still a fallback -- but not silent either: a
+		// tombstone that was never written turns the next recall into a repeat, and a
+		// swallowed error is the only way that happens without anyone hearing about it.
+		return false;
 	}
 }
 
-function deliveredTombs(): Set<string> {
+export function deliveredTombs(stateDir: string): Set<string> {
 	const ids = new Set<string>();
 	try {
-		for (const n of readdirSync(DELIVERED_DIR)) ids.add(n);
+		for (const n of readdirSync(join(stateDir, "delivered"))) ids.add(n);
 	} catch {
 		/* nothing delivered from this build yet */
 	}
@@ -1149,7 +1158,7 @@ function scanInbox(): {
  * process can make about itself is what it was compiled with. Bump this whenever the
  * file changes; tools/test_ext_version.py fails if you forget.
  */
-export const EXT_VERSION = "9";
+export const EXT_VERSION = "10";
 
 /**
  * Write our fields into a marker file WITHOUT erasing fields we did not write.
@@ -1281,6 +1290,9 @@ export default function (pi: ExtensionAPI) {
 	// Announced, unclaimed and never rendered: the cell that used to be permanent.
 	// Recomputed at session_start, cleared as each one is delivered.
 	let recalled: Set<string> = new Set();
+	// Counted, not swallowed: see markDelivered's catch.
+	let tombstoneFailed = 0;
+	let warnedTombstone = false;
 
 	const deliver = async (
 		ctx: ExtensionContext,
@@ -1301,10 +1313,25 @@ export default function (pi: ExtensionAPI) {
 			for (const m of msgs) {
 				attempts.delete(m.id);
 				logSaid("in", m.from_label || m.from_fingerprint || "peer", m.body, m.id);
-				markDelivered(m.id); // the durable record; the row is the fallback
+				if (!markDelivered(m.id, (m.body || "").length)) {
+					tombstoneFailed++; // the durable record; the row is the fallback
+				}
 				recalled.delete(m.id); // delivered now; stop reconsidering it
 			}
 			paintChat(ctx);
+			if (tombstoneFailed > 0 && !warnedTombstone) {
+				warnedTombstone = true;
+				const n = tombstoneFailed;
+				tombstoneFailed = 0;
+				try {
+					ctx.ui.notify(
+						`toragents: delivered ${n} message(s) but could not record the delivery ` +
+							`(state dir unwritable?). They are shown now and will be shown AGAIN ` +
+							`on the next start, because nothing on disk says they arrived.`,
+						"warning",
+					);
+				} catch {}
+			}
 		} catch (err) {
 			// Delivery failed. Retry, but not forever: a permanently failing id
 			// would otherwise re-fire every tick and hammer the session.
@@ -1503,7 +1530,7 @@ export default function (pi: ExtensionAPI) {
 		recalled = new Set();
 		try {
 			const rows = deliveredIds();
-			const tombs = deliveredTombs();
+			const tombs = deliveredTombs(STATE);
 			const claims = new Set(readdirSync(CLAIM_DIR));
 			const present = new Set(scanInbox().messages.map((m) => m.id));
 			for (const id of onDisk ?? []) {
