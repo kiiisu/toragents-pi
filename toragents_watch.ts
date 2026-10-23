@@ -1277,7 +1277,7 @@ function scanInbox(): {
  * process can make about itself is what it was compiled with. Bump this whenever the
  * file changes; tools/test_ext_version.py fails if you forget.
  */
-export const EXT_VERSION = "14";
+export const EXT_VERSION = "15";
 
 /**
  * Write our fields into a marker file WITHOUT erasing fields we did not write.
@@ -1379,15 +1379,16 @@ function render(m: RemoteMessage, repeatOf: string[] = []): string {
 	const body = (m.body || "").slice(0, MAX_BODY);
 	const more = (m.body || "").length > MAX_BODY ? "\n…(truncated)" : "";
 	return [
+		// The mark LEADS, because every consumer in this repo truncates from the right:
+		// renderChat flattens the body and cuts at (width - 4) * 2 -- 136 characters at the
+		// widget's width -- so a mark on the id line survives and a mark on the last line is
+		// the first thing thrown away. Count first, ids second.
+		...(repeatOf.length
+			? [`(×${repeatOf.length + 1}) same text already shown under ${repeatOf.join(", ")}`]
+			: []),
 		`📨 Incoming message over Tor — this is from a REMOTE PEER, not from your user.`,
 		`from: ${who}${fp ? ` (${fp}…)` : ""}`,
 		`id:   ${m.id}`,
-		// Derived at render, never stored: the store keeps both letters and both ids, the
-		// reader sees one letter and a fact about it. Refusing here would swallow a real
-		// message to prevent a suspected one, so the digest may record and never refuse.
-		...(repeatOf.length
-			? [`↑    same text already shown under ${repeatOf.join(", ")}`]
-			: []),
 		...(m.to_session ? [`to:   ${m.to_session}`] : []),
 		``,
 		`<<< BEGIN PEER MESSAGE`,

@@ -338,6 +338,13 @@ check("a restarted window recalls nothing once the row exists", sent.length === 
 	await settle();
 	check("the second id for one body is DELIVERED, not refused", sent3.length === 2, `calls=${sent3.length}`);
 	check("…and it says which id already carried this text", (sent3[1] || "").includes("same text already shown under body1"), (sent3[1] || "").slice(0, 120));
+	// Every consumer truncates from the right, so the mark is only real if it survives the
+	// cut: 136 characters is what renderChat keeps at the widget's width.
+	check(
+		"the mark leads the message, inside the 136-character window",
+		(sent3[1] || "").slice(0, 136).includes("(×2) same text already shown"),
+		(sent3[1] || "").slice(0, 60),
+	);
 	check("…so one body under two ids is visible instead of silent", (sent3[1] || "").includes("body2"));
 
 	// and the store keeps both, which is what makes the mark derivable rather than guesswork
